@@ -1,0 +1,18 @@
+[package]
+name = "verus-fractals"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+vstd = { path = "../verus/source/vstd" }
+verus-algebra = { path = "../verus-algebra" }
+verus-bigint = { path = "../verus-bigint" }
+verus-rational = { path = "../verus-rational" }
+verus-interval-arithmetic = { path = "../verus-interval-arithmetic" }
+builtin = { package = "verus_builtin", path = "../verus/source/builtin" }
+
+[package.metadata.verus]
+verify = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_keep_ghost)'] }
