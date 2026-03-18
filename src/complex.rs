@@ -1,5 +1,8 @@
 use vstd::prelude::*;
 
+use verus_algebra::lemmas::additive_group_lemmas;
+use verus_algebra::lemmas::ring_lemmas;
+use verus_algebra::traits::additive_group::AdditiveGroup;
 use verus_algebra::traits::equivalence::Equivalence;
 use verus_algebra::traits::ring::Ring;
 
@@ -49,6 +52,32 @@ pub open spec fn complex_eq<T: Ring>(a: Complex<T>, b: Complex<T>) -> bool {
 
 pub open spec fn complex_scale<T: Ring>(s: T, z: Complex<T>) -> Complex<T> {
     (s.mul(z.0), s.mul(z.1))
+}
+
+}
+
+verus! {
+
+pub proof fn lemma_complex_neg_involutive<T: Ring>(a: Complex<T>)
+    ensures complex_neg(complex_neg(a)).0.eqv(a.0),
+        complex_neg(complex_neg(a)).1.eqv(a.1),
+{
+    additive_group_lemmas::lemma_neg_involution::<T>(a.0);
+    additive_group_lemmas::lemma_neg_involution::<T>(a.1);
+}
+
+pub proof fn lemma_complex_abs_sq_nneg<T: Ring>(z: Complex<T>)
+    ensures z.0.mul(z.0).add(z.1.mul(z.1)).eqv(z.1.mul(z.1).add(z.0.mul(z.0))),
+{
+    T::axiom_add_commutative(z.0.mul(z.0), z.1.mul(z.1));
+}
+
+pub proof fn lemma_complex_conj_involutive<T: Ring>(z: Complex<T>)
+    ensures complex_conj(complex_conj(z)).0.eqv(z.0),
+        complex_conj(complex_conj(z)).1.eqv(z.1),
+{
+    T::axiom_eqv_reflexive(z.0);
+    additive_group_lemmas::lemma_neg_involution::<T>(z.1);
 }
 
 }

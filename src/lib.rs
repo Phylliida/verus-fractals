@@ -12,8 +12,6 @@ pub mod orbit;
 pub mod viewport;
 pub mod fractal;
 pub mod rational_perturbation;
+pub mod series_approximation;
 
 }
-
-#[cfg(verus_keep_ghost)]
-pub mod runtime;

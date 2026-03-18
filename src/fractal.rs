@@ -14,7 +14,7 @@ pub open spec fn check_escape<T: OrderedField>(z: Complex<T>) -> bool {
     complex_abs_sq(z).ge(four)
 }
 
-pub open spec fn iterate_mandelbrot<T: Ring>(
+pub open spec fn iterate_mandelbrot<T: OrderedField>(
     c: Complex<T>,
     max_iters: nat,
 ) -> EscapeResult
