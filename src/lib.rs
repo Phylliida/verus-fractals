@@ -13,5 +13,6 @@ pub mod viewport;
 pub mod fractal;
 pub mod rational_perturbation;
 pub mod series_approximation;
+pub mod deep_zoom;
 
 }
