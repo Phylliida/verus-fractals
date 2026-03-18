@@ -29,4 +29,37 @@ pub open spec fn compute_ref_orbit_spec<T: OrderedField>(
     }
 }
 
+pub open spec fn find_period<T: OrderedField>(
+    c: Complex<T>,
+    max_period: nat,
+) -> (nat, bool)
+    decreases max_period,
+{
+    if max_period == 0 {
+        (0 as nat, false)
+    } else {
+        let orbit = compute_ref_orbit_spec(c, max_period).0;
+        find_period_in_orbit::<T>(orbit, max_period)
+    }
+}
+
+pub open spec fn find_period_in_orbit<T: OrderedField>(
+    orbit: Seq<Complex<T>>,
+    max_period: nat,
+) -> (nat, bool)
+    decreases orbit.len(),
+{
+    if orbit.len() <= 1 {
+        (0 as nat, false)
+    } else {
+        let first = orbit[0];
+        let candidate = orbit[orbit.len() - 1];
+        if complex_eq(candidate, first) {
+            ((orbit.len() - 1) as nat, true)
+        } else {
+            (0 as nat, false)
+        }
+    }
+}
+
 }
