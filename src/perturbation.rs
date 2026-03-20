@@ -1,6 +1,8 @@
 use vstd::prelude::*;
 
 use crate::complex::*;
+use verus_algebra::lemmas::additive_group_lemmas;
+use verus_algebra::lemmas::ring_lemmas;
 use verus_algebra::traits::ring::Ring;
 
 verus! {
