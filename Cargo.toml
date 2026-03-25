@@ -10,6 +10,7 @@ verus-bigint = { path = "../verus-bigint" }
 verus-rational = { path = "../verus-rational" }
 verus-interval-arithmetic = { path = "../verus-interval-arithmetic" }
 verus-fixed-point = { path = "../verus-fixed-point" }
+verus-cutedsl = { path = "../verus-cutedsl" }
 builtin = { package = "verus_builtin", path = "../verus/source/builtin" }
 
 [package.metadata.verus]

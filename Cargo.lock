@@ -86,6 +86,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "verus-cutedsl"
+version = "0.1.0"
+dependencies = [
+ "verus-algebra",
+ "vstd",
+]
+
+[[package]]
 name = "verus-fixed-point"
 version = "0.1.0"
 dependencies = [
@@ -102,6 +110,7 @@ version = "0.1.0"
 dependencies = [
  "verus-algebra",
  "verus-bigint",
+ "verus-cutedsl",
  "verus-fixed-point",
  "verus-interval-arithmetic",
  "verus-rational",
