@@ -436,6 +436,123 @@ pub open spec fn mandelbrot_body(n_pixels: nat) -> Stage {
     }
 }
 
+// ══════════════════════════════════════════════════════════════
+// eval_map_threads buffer frame lemmas (for two-output chaining)
+// ══════════════════════════════════════════════════════════════
+
+/// eval_map_threads on out_buf doesn't modify other buffers.
+proof fn lemma_eval_map_threads_preserves_other_buf(
+    spec: &KernelSpec,
+    inputs: Seq<Seq<int>>,
+    out_buf: nat,
+    out_idx: nat,
+    state: SharedState,
+    tid: nat,
+    other_buf: nat,
+)
+    requires
+        out_buf < state.num_buffers(),
+        other_buf < state.num_buffers(),
+        out_buf != other_buf,
+        out_idx < spec.outputs.len(),
+        scatter_in_bounds(spec, inputs, out_idx, state.buffer_len(out_buf), state.workgroup_size),
+    ensures
+        eval_map_threads(spec, inputs, out_buf, out_idx, state, tid)
+            .buffers[other_buf as int] == state.buffers[other_buf as int],
+    decreases state.workgroup_size - tid,
+{
+    if tid >= state.workgroup_size {
+    } else {
+        let env = thread_env_1d(tid);
+        let guard_val = arith_eval_with_arrays(&spec.guard, env, inputs);
+        if guard_val != 0 {
+            let (scatter_idx, compute_val) = eval_output(
+                &spec.outputs[out_idx as int], env, inputs);
+            assert(0 <= scatter_idx && scatter_idx < state.buffer_len(out_buf) as int);
+            let new_state = state.write(out_buf, scatter_idx as nat, compute_val);
+            use verus_cutedsl::proof::stage_lemmas::lemma_write_other_buffer;
+            lemma_write_other_buffer(state, out_buf, scatter_idx as nat, compute_val, other_buf);
+            lemma_eval_map_threads_preserves_other_buf(
+                spec, inputs, out_buf, out_idx, new_state, tid + 1, other_buf);
+        } else {
+            lemma_eval_map_threads_preserves_other_buf(
+                spec, inputs, out_buf, out_idx, state, tid + 1, other_buf);
+        }
+    }
+}
+
+/// eval_map_threads preserves workgroup_size.
+proof fn lemma_eval_map_threads_preserves_wg_size(
+    spec: &KernelSpec,
+    inputs: Seq<Seq<int>>,
+    out_buf: nat,
+    out_idx: nat,
+    state: SharedState,
+    tid: nat,
+)
+    requires
+        out_buf < state.num_buffers(),
+        out_idx < spec.outputs.len(),
+        scatter_in_bounds(spec, inputs, out_idx, state.buffer_len(out_buf), state.workgroup_size),
+    ensures
+        eval_map_threads(spec, inputs, out_buf, out_idx, state, tid)
+            .workgroup_size == state.workgroup_size,
+    decreases state.workgroup_size - tid,
+{
+    if tid >= state.workgroup_size {
+    } else {
+        let env = thread_env_1d(tid);
+        let guard_val = arith_eval_with_arrays(&spec.guard, env, inputs);
+        if guard_val != 0 {
+            let (scatter_idx, compute_val) = eval_output(
+                &spec.outputs[out_idx as int], env, inputs);
+            assert(0 <= scatter_idx && scatter_idx < state.buffer_len(out_buf) as int);
+            let new_state = state.write(out_buf, scatter_idx as nat, compute_val);
+            lemma_eval_map_threads_preserves_wg_size(
+                spec, inputs, out_buf, out_idx, new_state, tid + 1);
+        } else {
+            lemma_eval_map_threads_preserves_wg_size(
+                spec, inputs, out_buf, out_idx, state, tid + 1);
+        }
+    }
+}
+
+/// eval_map_threads preserves num_buffers.
+proof fn lemma_eval_map_threads_preserves_num_bufs(
+    spec: &KernelSpec,
+    inputs: Seq<Seq<int>>,
+    out_buf: nat,
+    out_idx: nat,
+    state: SharedState,
+    tid: nat,
+)
+    requires
+        out_buf < state.num_buffers(),
+        out_idx < spec.outputs.len(),
+        scatter_in_bounds(spec, inputs, out_idx, state.buffer_len(out_buf), state.workgroup_size),
+    ensures
+        eval_map_threads(spec, inputs, out_buf, out_idx, state, tid)
+            .num_buffers() == state.num_buffers(),
+    decreases state.workgroup_size - tid,
+{
+    if tid >= state.workgroup_size {
+    } else {
+        let env = thread_env_1d(tid);
+        let guard_val = arith_eval_with_arrays(&spec.guard, env, inputs);
+        if guard_val != 0 {
+            let (scatter_idx, compute_val) = eval_output(
+                &spec.outputs[out_idx as int], env, inputs);
+            assert(0 <= scatter_idx && scatter_idx < state.buffer_len(out_buf) as int);
+            let new_state = state.write(out_buf, scatter_idx as nat, compute_val);
+            lemma_eval_map_threads_preserves_num_bufs(
+                spec, inputs, out_buf, out_idx, new_state, tid + 1);
+        } else {
+            lemma_eval_map_threads_preserves_num_bufs(
+                spec, inputs, out_buf, out_idx, state, tid + 1);
+        }
+    }
+}
+
 /// One iteration of the mandelbrot body preserves the orbit invariant,
 /// advancing the iteration count by 1.
 ///
