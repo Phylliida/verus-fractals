@@ -9,3 +9,6 @@ pub mod bla;
 
 #[cfg(verus_keep_ghost)]
 pub mod bla_kernels;
+
+#[cfg(verus_keep_ghost)]
+pub mod mandelbrot_stage;
