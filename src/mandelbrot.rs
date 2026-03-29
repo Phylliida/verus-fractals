@@ -4,31 +4,31 @@ use crate::complex::*;
 
 verus! {
 
-// ══════════════════════════════════════════════════════════════
-// Mandelbrot iteration spec
-// ══════════════════════════════════════════════════════════════
+//  ══════════════════════════════════════════════════════════════
+//  Mandelbrot iteration spec
+//  ══════════════════════════════════════════════════════════════
 
-/// Mandelbrot orbit after `steps` iterations.
-/// z_{k+1} = z_k² + c, z_0 = (0, 0).
+///  Mandelbrot orbit after `steps` iterations.
+///  z_{k+1} = z_k² + c, z_0 = (0, 0).
 ///
-/// Note: each step widens the format (mul doubles limbs/frac).
-/// In practice, reduce_down is applied after each step to keep working format.
-/// This spec tracks the exact (widened) values for proof purposes.
+///  Note: each step widens the format (mul doubles limbs/frac).
+///  In practice, reduce_down is applied after each step to keep working format.
+///  This spec tracks the exact (widened) values for proof purposes.
 pub open spec fn mandelbrot_orbit_step(
     z: ComplexFP, c_wide: ComplexFP,
 ) -> ComplexFP {
     z.mandelbrot_step(c_wide)
 }
 
-/// Escape predicate: norm_sq(z) > threshold.
-/// threshold is typically 4.0 in the widened format.
+///  Escape predicate: norm_sq(z) > threshold.
+///  threshold is typically 4.0 in the widened format.
 pub open spec fn has_escaped(z: ComplexFP, threshold: FixedPoint) -> bool {
-    // z has escaped if norm_sq is NOT less-or-equal to threshold
+    //  z has escaped if norm_sq is NOT less-or-equal to threshold
     !z.norm_sq().le_spec(threshold)
 }
 
-/// Escape time: iterate z = z² + c until |z|² > threshold or max_iter reached.
-/// Returns the number of iterations completed.
+///  Escape time: iterate z = z² + c until |z|² > threshold or max_iter reached.
+///  Returns the number of iterations completed.
 pub open spec fn escape_time(
     z: ComplexFP, c_wide: ComplexFP,
     threshold: FixedPoint,
@@ -49,11 +49,11 @@ pub open spec fn escape_time(
     }
 }
 
-// ══════════════════════════════════════════════════════════════
-// Properties
-// ══════════════════════════════════════════════════════════════
+//  ══════════════════════════════════════════════════════════════
+//  Properties
+//  ══════════════════════════════════════════════════════════════
 
-/// Escape time is bounded by max_iter.
+///  Escape time is bounded by max_iter.
 pub proof fn lemma_escape_time_bounded(
     z: ComplexFP, c_wide: ComplexFP,
     threshold: FixedPoint,
@@ -83,7 +83,7 @@ proof fn lemma_escape_time_bounded_from(
     }
 }
 
-/// If z has escaped, escape_time returns immediately.
+///  If z has escaped, escape_time returns immediately.
 pub proof fn lemma_escaped_returns_count(
     z: ComplexFP, c_wide: ComplexFP,
     threshold: FixedPoint,
@@ -93,7 +93,7 @@ pub proof fn lemma_escaped_returns_count(
     ensures escape_time(z, c_wide, threshold, remaining, count) == count,
 {}
 
-/// Mandelbrot step preserves the algebraic identity: z' = z² + c.
+///  Mandelbrot step preserves the algebraic identity: z' = z² + c.
 pub proof fn lemma_step_is_square_plus_c(z: ComplexFP, c_wide: ComplexFP)
     ensures
         mandelbrot_orbit_step(z, c_wide).re
@@ -102,4 +102,4 @@ pub proof fn lemma_step_is_square_plus_c(z: ComplexFP, c_wide: ComplexFP)
             == z.re.mul_spec(z.im).add_spec(z.re.mul_spec(z.im)).add_spec(c_wide.im),
 {}
 
-} // verus!
+} //  verus!

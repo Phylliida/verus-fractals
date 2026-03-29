@@ -1,10 +1,10 @@
-/// Verified Mandelbrot kernel as a Stage tree.
+///  Verified Mandelbrot kernel as a Stage tree.
 ///
-/// Proves end-to-end: staged_eval(mandelbrot_kernel, init_state) computes
-/// the correct Mandelbrot orbit for each pixel.
+///  Proves end-to-end: staged_eval(mandelbrot_kernel, init_state) computes
+///  the correct Mandelbrot orbit for each pixel.
 ///
-/// Uses exact int arithmetic (no fixed-point truncation). The fixed-point
-/// version is a refinement that adds Shr nodes to the ArithExpr.
+///  Uses exact int arithmetic (no fixed-point truncation). The fixed-point
+///  version is a refinement that adds Shr nodes to the ArithExpr.
 
 use vstd::prelude::*;
 use verus_cutedsl::arith_expr::*;
@@ -14,9 +14,9 @@ use verus_cutedsl::proof::stage_lemmas::*;
 
 verus! {
 
-// ══════════════════════════════════════════════════════════════
-// Buffer layout
-// ══════════════════════════════════════════════════════════════
+//  ══════════════════════════════════════════════════════════════
+//  Buffer layout
+//  ══════════════════════════════════════════════════════════════
 
 pub open spec fn BUF_Z_RE() -> nat { 0 }
 pub open spec fn BUF_Z_IM() -> nat { 1 }
@@ -24,14 +24,14 @@ pub open spec fn BUF_C_RE() -> nat { 2 }
 pub open spec fn BUF_C_IM() -> nat { 3 }
 pub open spec fn NUM_BUFS() -> nat { 4 }
 
-/// Index(buf, Var(0)) — thread i reads buf[i].
+///  Index(buf, Var(0)) — thread i reads buf[i].
 pub open spec fn idx(buf: nat) -> ArithExpr {
     ArithExpr::Index(buf, Box::new(ArithExpr::Var(0)))
 }
 
-// ══════════════════════════════════════════════════════════════
-// Mandelbrot step kernel: z' = z² + c
-// ══════════════════════════════════════════════════════════════
+//  ══════════════════════════════════════════════════════════════
+//  Mandelbrot step kernel: z' = z² + c
+//  ══════════════════════════════════════════════════════════════
 
 pub open spec fn mandelbrot_step_kernel(n_pixels: nat) -> KernelSpec {
     KernelSpec {
@@ -58,9 +58,9 @@ pub open spec fn mandelbrot_step_kernel(n_pixels: nat) -> KernelSpec {
     }
 }
 
-// ══════════════════════════════════════════════════════════════
-// Mandelbrot orbit spec
-// ══════════════════════════════════════════════════════════════
+//  ══════════════════════════════════════════════════════════════
+//  Mandelbrot orbit spec
+//  ══════════════════════════════════════════════════════════════
 
 pub open spec fn mandelbrot_orbit(c_re: int, c_im: int, n: nat) -> (int, int)
     decreases n,
@@ -83,9 +83,9 @@ pub proof fn lemma_orbit_step(c_re: int, c_im: int, n: nat)
     }),
 {}
 
-// ══════════════════════════════════════════════════════════════
-// Kernel correctness: ArithExpr computes mandelbrot_step
-// ══════════════════════════════════════════════════════════════
+//  ══════════════════════════════════════════════════════════════
+//  Kernel correctness: ArithExpr computes mandelbrot_step
+//  ══════════════════════════════════════════════════════════════
 
 pub proof fn lemma_mandelbrot_step_kernel_correct(
     n_pixels: nat,
@@ -128,7 +128,7 @@ pub proof fn lemma_mandelbrot_step_kernel_correct(
     lemma_eval_with_arrays_cmp(&CmpOp::Lt, &var0,
         &ArithExpr::Const(n_pixels as int), env, inputs);
 
-    // Output 0: z_re² - z_im² + c_re
+    //  Output 0: z_re² - z_im² + c_re
     lemma_eval_with_arrays_mul(&idx0, &idx0, env, inputs);
     lemma_eval_with_arrays_mul(&idx1, &idx1, env, inputs);
     let zr_sq = ArithExpr::Mul(Box::new(idx0), Box::new(idx0));
@@ -137,7 +137,7 @@ pub proof fn lemma_mandelbrot_step_kernel_correct(
     let diff = ArithExpr::Sub(Box::new(zr_sq), Box::new(zi_sq));
     lemma_eval_with_arrays_add(&diff, &idx2, env, inputs);
 
-    // Output 1: 2 * z_re * z_im + c_im
+    //  Output 1: 2 * z_re * z_im + c_im
     lemma_eval_with_arrays_mul(&idx0, &idx1, env, inputs);
     let cross = ArithExpr::Mul(Box::new(idx0), Box::new(idx1));
     lemma_eval_with_arrays_mul(&ArithExpr::Const(2), &cross, env, inputs);
@@ -159,9 +159,9 @@ pub proof fn lemma_mandelbrot_step_kernel_correct(
         == 2 * z_re_buf[px as int] * z_im_buf[px as int]) by (nonlinear_arith);
 }
 
-// ══════════════════════════════════════════════════════════════
-// Stage tree
-// ══════════════════════════════════════════════════════════════
+//  ══════════════════════════════════════════════════════════════
+//  Stage tree
+//  ══════════════════════════════════════════════════════════════
 
 pub open spec fn mandelbrot_body(n_pixels: nat) -> Stage {
     Stage::Map {
@@ -194,9 +194,9 @@ pub open spec fn mandelbrot_init_state(
     }
 }
 
-// ══════════════════════════════════════════════════════════════
-// Loop invariant
-// ══════════════════════════════════════════════════════════════
+//  ══════════════════════════════════════════════════════════════
+//  Loop invariant
+//  ══════════════════════════════════════════════════════════════
 
 pub open spec fn orbit_invariant(
     n_pixels: nat, c_re_vals: Seq<int>, c_im_vals: Seq<int>,
@@ -237,13 +237,13 @@ pub proof fn lemma_orbit_invariant_init(
     }
 }
 
-// ══════════════════════════════════════════════════════════════
-// Preservation: one step advances the orbit
+//  ══════════════════════════════════════════════════════════════
+//  Preservation: one step advances the orbit
 //
-// With the declarative eval_map, this is clean:
-// eval_map uses map_output_declarative which is a Seq::new.
-// Each pixel px gets compute(px, inputs) = mandelbrot_step(z[px], c[px]).
-// ══════════════════════════════════════════════════════════════
+//  With the declarative eval_map, this is clean:
+//  eval_map uses map_output_declarative which is a Seq::new.
+//  Each pixel px gets compute(px, inputs) = mandelbrot_step(z[px], c[px]).
+//  ══════════════════════════════════════════════════════════════
 
 pub proof fn lemma_orbit_invariant_preserved(
     n_pixels: nat,
@@ -271,12 +271,12 @@ pub proof fn lemma_orbit_invariant_preserved(
     let inputs = seq![old_zr, old_zi, c_re_vals, c_im_vals];
     let ws = thread_count(&dim, state.workgroup_size);
 
-    // staged_eval(body) = eval_map(spec, input_bufs, output_bufs, state, &dim)
+    //  staged_eval(body) = eval_map(spec, input_bufs, output_bufs, state, &dim)
     let new_state = staged_eval(&body, state);
-    // Help Z3 see through the match in staged_eval
+    //  Help Z3 see through the match in staged_eval
     assert(new_state == eval_map(&spec, input_bufs, output_bufs, state, &dim));
 
-    // Unfold eval_map into two set_buffer calls via map_output_declarative
+    //  Unfold eval_map into two set_buffer calls via map_output_declarative
     lemma_eval_map_two_outputs(&spec, input_bufs, output_bufs, state, &dim);
 
     let new_zr_buf = map_output_declarative(&spec, 0, inputs,
@@ -286,73 +286,73 @@ pub proof fn lemma_orbit_invariant_preserved(
         after_zr.buffers[BUF_Z_IM() as int], ws, &dim);
     let after_both = after_zr.set_buffer(BUF_Z_IM(), new_zi_buf);
 
-    // eval_map == after_both (from lemma_eval_map_two_outputs)
+    //  eval_map == after_both (from lemma_eval_map_two_outputs)
     assert(eval_map(&spec, input_bufs, output_bufs, state, &dim) == after_both);
     assert(new_state == after_both);
 
-    // c buffers unchanged: set_buffer on buf 0 doesn't affect bufs 2,3
-    // set_buffer on buf 1 doesn't affect bufs 2,3
+    //  c buffers unchanged: set_buffer on buf 0 doesn't affect bufs 2,3
+    //  set_buffer on buf 1 doesn't affect bufs 2,3
     lemma_set_buffer_other(state, BUF_Z_RE(), new_zr_buf, BUF_C_RE());
     lemma_set_buffer_other(state, BUF_Z_RE(), new_zr_buf, BUF_C_IM());
     lemma_set_buffer_other(after_zr, BUF_Z_IM(), new_zi_buf, BUF_C_RE());
     lemma_set_buffer_other(after_zr, BUF_Z_IM(), new_zi_buf, BUF_C_IM());
 
-    // z_im unchanged after first set_buffer (buf 0 != buf 1)
+    //  z_im unchanged after first set_buffer (buf 0 != buf 1)
     lemma_set_buffer_other(state, BUF_Z_RE(), new_zr_buf, BUF_Z_IM());
-    // So after_zr.buffers[BUF_Z_IM()] == old_zi
+    //  So after_zr.buffers[BUF_Z_IM()] == old_zi
     assert(after_zr.buffers[BUF_Z_IM() as int] == old_zi);
 
-    // Structural properties of new_state
+    //  Structural properties of new_state
     assert(after_both.buffers.len() == NUM_BUFS());
     assert(after_both.workgroup_size == n_pixels);
     assert(after_both.buffers[BUF_C_RE() as int] == c_re_vals);
     assert(after_both.buffers[BUF_C_IM() as int] == c_im_vals);
 
-    // Bridge: thread_env_for_dim(Dim1D, t) == thread_env_1d(t)
+    //  Bridge: thread_env_for_dim(Dim1D, t) == thread_env_1d(t)
     assert forall|t: nat| thread_env_for_dim(&dim, t) == thread_env_1d(t) by {}
 
-    // Per-pixel orbit correctness
+    //  Per-pixel orbit correctness
     assert forall|px: int| 0 <= px < n_pixels as int implies
         #[trigger] after_both.buffers[BUF_Z_RE() as int][px]
             == mandelbrot_orbit(c_re_vals[px], c_im_vals[px], (k + 1) as nat).0
         && after_both.buffers[BUF_Z_IM() as int][px]
             == mandelbrot_orbit(c_re_vals[px], c_im_vals[px], (k + 1) as nat).1
     by {
-        // Old z values from invariant
+        //  Old z values from invariant
         let (orbit_re, orbit_im) = mandelbrot_orbit(c_re_vals[px], c_im_vals[px], k);
         assert(old_zr[px] == orbit_re);
         assert(old_zi[px] == orbit_im);
 
-        // Kernel correctness
+        //  Kernel correctness
         lemma_mandelbrot_step_kernel_correct(
             n_pixels, old_zr, old_zi, c_re_vals, c_im_vals, px as nat);
 
-        // Orbit step
+        //  Orbit step
         lemma_orbit_step(c_re_vals[px], c_im_vals[px], k);
 
-        // map_output_declarative for output 0 (z_re): thread px writes compute_0
-        // Since scatter = Var(0) = px, thread px is the writer for position px
+        //  map_output_declarative for output 0 (z_re): thread px writes compute_0
+        //  Since scatter = Var(0) = px, thread px is the writer for position px
         assert(thread_env_for_dim(&dim, px as nat) == thread_env_1d(px as nat));
         assert(arith_eval_with_arrays(&spec.guard,
             thread_env_for_dim(&dim, px as nat), inputs) != 0);
         assert(arith_eval_with_arrays(&spec.outputs[0].scatter,
             thread_env_for_dim(&dim, px as nat), inputs) == px);
 
-        // new_zr_buf[px] = compute_0(px, inputs) = z_re² - z_im² + c_re
-        // new_zi_buf[px] = compute_1(px, inputs) = 2*z_re*z_im + c_im
-        // (These follow from the exists/choose in map_output_declarative
-        //  since thread px satisfies the predicate)
+        //  new_zr_buf[px] = compute_0(px, inputs) = z_re² - z_im² + c_re
+        //  new_zi_buf[px] = compute_1(px, inputs) = 2*z_re*z_im + c_im
+        //  (These follow from the exists/choose in map_output_declarative
+        //   since thread px satisfies the predicate)
     }
 
-    // Buffer lengths preserved
+    //  Buffer lengths preserved
     assert(new_zr_buf.len() == old_zr.len());
     assert(after_both.buffers[BUF_Z_RE() as int].len() == n_pixels as int);
     assert(after_both.buffers[BUF_Z_IM() as int].len() == n_pixels as int);
 }
 
-// ══════════════════════════════════════════════════════════════
-// End-to-end theorem
-// ══════════════════════════════════════════════════════════════
+//  ══════════════════════════════════════════════════════════════
+//  End-to-end theorem
+//  ══════════════════════════════════════════════════════════════
 
 pub proof fn theorem_mandelbrot_orbit_correctness(
     n_pixels: nat,
@@ -379,14 +379,14 @@ pub proof fn theorem_mandelbrot_orbit_correctness(
     let body = mandelbrot_body(n_pixels);
     let inv = orbit_invariant(n_pixels, c_re_vals, c_im_vals);
 
-    // 1. Invariant holds initially
+    //  1. Invariant holds initially
     lemma_orbit_invariant_init(n_pixels, c_re_vals, c_im_vals);
 
-    // 2. staged_eval(kernel) = eval_loop(body, init, max_iter, 0)
+    //  2. staged_eval(kernel) = eval_loop(body, init, max_iter, 0)
     let kernel = mandelbrot_kernel(n_pixels, max_iter);
     assert(staged_eval(&kernel, init) == eval_loop(&body, init, max_iter, 0));
 
-    // 3. Invariant preserved by each step (in trigger form for lemma_loop_inv)
+    //  3. Invariant preserved by each step (in trigger form for lemma_loop_inv)
     assert forall|s: SharedState, k: nat|
         #[trigger] inv(staged_eval(&body, s), k + 1)
         || !(k < max_iter && inv(s, k))
@@ -396,12 +396,12 @@ pub proof fn theorem_mandelbrot_orbit_correctness(
         }
     }
 
-    // 4. Apply loop invariant induction
+    //  4. Apply loop invariant induction
     lemma_loop_inv(&body, init, max_iter, inv);
 
-    // 5. Extract result from invariant at iteration max_iter
+    //  5. Extract result from invariant at iteration max_iter
     let final_state = eval_loop(&body, init, max_iter, 0);
     assert(inv(final_state, max_iter));
 }
 
-} // verus!
+} //  verus!
