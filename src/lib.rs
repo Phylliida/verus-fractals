@@ -15,3 +15,6 @@ pub mod mandelbrot_stage;
 
 #[cfg(verus_keep_ghost)]
 pub mod gpu_fixed_point;
+
+#[cfg(verus_keep_ghost)]
+pub mod gpu_ring_test;
