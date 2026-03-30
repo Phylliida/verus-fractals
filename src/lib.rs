@@ -12,3 +12,6 @@ pub mod bla_kernels;
 
 #[cfg(verus_keep_ghost)]
 pub mod mandelbrot_stage;
+
+#[cfg(verus_keep_ghost)]
+pub mod gpu_fixed_point;
