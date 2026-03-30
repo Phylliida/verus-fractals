@@ -836,4 +836,169 @@ pub open spec fn karatsuba_mul_kernel(
     }
 }
 
+//  ══════════════════════════════════════════════════════════════
+//  Multi-limb sequence helpers
+//  ══════════════════════════════════════════════════════════════
+
+///  Add two n-limb ArithExpr sequences, producing n result limbs.
+pub open spec fn add_limbs_seq(a: Seq<ArithExpr>, b: Seq<ArithExpr>, n: nat) -> Seq<ArithExpr> {
+    Seq::new(n, |j: int| gen_add_result_limb(a, b, j as nat))
+}
+
+///  Subtract two n-limb ArithExpr sequences, producing n result limbs.
+pub open spec fn sub_limbs_seq(a: Seq<ArithExpr>, b: Seq<ArithExpr>, n: nat) -> Seq<ArithExpr> {
+    Seq::new(n, |j: int| gen_sub_result_limb(a, b, j as nat))
+}
+
+///  Multiply and truncate for fixed-point: (a * b) >> (frac_limbs * 32).
+///  Keeps `n` result limbs starting at position `frac_limbs` of the 2n-limb product.
+pub open spec fn mul_truncate(
+    a: Seq<ArithExpr>, b: Seq<ArithExpr>, n: nat, frac_limbs: nat,
+) -> Seq<ArithExpr>
+    recommends frac_limbs + n <= 2 * n,
+{
+    let full = mul_result_limbs(a, b, n);
+    full.subrange(frac_limbs as int, (frac_limbs + n) as int)
+}
+
+///  Pad or truncate a Seq<ArithExpr> to exactly `len` elements.
+pub open spec fn pad_seq(s: Seq<ArithExpr>, len: nat) -> Seq<ArithExpr> {
+    Seq::new(len, |j: int| if j < s.len() { s[j] } else { ArithExpr::Const(0) })
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  Complex arithmetic on multi-limb fixed-point ArithExpr
+//  ══════════════════════════════════════════════════════════════
+
+///  Complex addition: (a_re + b_re, a_im + b_im).
+pub open spec fn complex_add(
+    a_re: Seq<ArithExpr>, a_im: Seq<ArithExpr>,
+    b_re: Seq<ArithExpr>, b_im: Seq<ArithExpr>,
+    n: nat,
+) -> (Seq<ArithExpr>, Seq<ArithExpr>) {
+    (add_limbs_seq(a_re, b_re, n), add_limbs_seq(a_im, b_im, n))
+}
+
+///  Complex subtraction: (a_re - b_re, a_im - b_im).
+pub open spec fn complex_sub(
+    a_re: Seq<ArithExpr>, a_im: Seq<ArithExpr>,
+    b_re: Seq<ArithExpr>, b_im: Seq<ArithExpr>,
+    n: nat,
+) -> (Seq<ArithExpr>, Seq<ArithExpr>) {
+    (sub_limbs_seq(a_re, b_re, n), sub_limbs_seq(a_im, b_im, n))
+}
+
+///  Complex multiply with fixed-point truncation:
+///  (a_re*b_re - a_im*b_im, a_re*b_im + a_im*b_re)
+///  Each product is truncated from 2n limbs to n limbs.
+pub open spec fn complex_mul(
+    a_re: Seq<ArithExpr>, a_im: Seq<ArithExpr>,
+    b_re: Seq<ArithExpr>, b_im: Seq<ArithExpr>,
+    n: nat, frac_limbs: nat,
+) -> (Seq<ArithExpr>, Seq<ArithExpr>) {
+    let rr = mul_truncate(a_re, b_re, n, frac_limbs);  //  a_re * b_re
+    let ii = mul_truncate(a_im, b_im, n, frac_limbs);  //  a_im * b_im
+    let ri = mul_truncate(a_re, b_im, n, frac_limbs);  //  a_re * b_im
+    let ir = mul_truncate(a_im, b_re, n, frac_limbs);  //  a_im * b_re
+
+    let re = sub_limbs_seq(rr, ii, n);  //  a_re*b_re - a_im*b_im
+    let im = add_limbs_seq(ri, ir, n);  //  a_re*b_im + a_im*b_re
+    (re, im)
+}
+
+///  Complex square with fixed-point truncation:
+///  (re² - im², 2*re*im)
+pub open spec fn complex_square(
+    re: Seq<ArithExpr>, im: Seq<ArithExpr>,
+    n: nat, frac_limbs: nat,
+) -> (Seq<ArithExpr>, Seq<ArithExpr>) {
+    let re_sq = mul_truncate(re, re, n, frac_limbs);
+    let im_sq = mul_truncate(im, im, n, frac_limbs);
+    let re_im = mul_truncate(re, im, n, frac_limbs);
+    let two_re_im = add_limbs_seq(re_im, re_im, n);  //  2 * re * im
+
+    let result_re = sub_limbs_seq(re_sq, im_sq, n);
+    (result_re, two_re_im)
+}
+
+///  Scale a complex number by 2: (2*re, 2*im) = (re+re, im+im).
+pub open spec fn complex_double(
+    re: Seq<ArithExpr>, im: Seq<ArithExpr>, n: nat,
+) -> (Seq<ArithExpr>, Seq<ArithExpr>) {
+    (add_limbs_seq(re, re, n), add_limbs_seq(im, im, n))
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  Mandelbrot perturbation step kernel
+//  ══════════════════════════════════════════════════════════════
+//
+//  δ_{n+1} = 2·Z_n·δ + δ² + Δc
+//
+//  Input buffers (6 buffers, n limbs each per thread):
+//    0: Z_re  (reference orbit real)
+//    1: Z_im  (reference orbit imaginary)
+//    2: δ_re  (current perturbation real)
+//    3: δ_im  (current perturbation imaginary)
+//    4: Δc_re (pixel offset real)
+//    5: Δc_im (pixel offset imaginary)
+//
+//  Output: new δ_re, δ_im (2 buffers, n limbs each per thread)
+
+///  Build the perturbation step as ArithExpr sequences.
+///  Returns (new_delta_re, new_delta_im) as Seq<ArithExpr>.
+pub open spec fn perturbation_step_exprs(
+    n: nat, frac_limbs: nat,
+) -> (Seq<ArithExpr>, Seq<ArithExpr>)
+    recommends n > 0, frac_limbs < n,
+{
+    //  Read inputs from buffers
+    let z_re = buffer_limbs(0, n, 0, n);
+    let z_im = buffer_limbs(1, n, 0, n);
+    let d_re = buffer_limbs(2, n, 0, n);
+    let d_im = buffer_limbs(3, n, 0, n);
+    let dc_re = buffer_limbs(4, n, 0, n);
+    let dc_im = buffer_limbs(5, n, 0, n);
+
+    //  2·Z_n·δ  (complex multiply of 2*Z with δ)
+    let (two_z_re, two_z_im) = complex_double(z_re, z_im, n);
+    let (two_z_d_re, two_z_d_im) = complex_mul(two_z_re, two_z_im, d_re, d_im, n, frac_limbs);
+
+    //  δ²  (complex square of δ)
+    let (d_sq_re, d_sq_im) = complex_square(d_re, d_im, n, frac_limbs);
+
+    //  δ_{n+1} = 2·Z·δ + δ² + Δc
+    let (sum1_re, sum1_im) = complex_add(two_z_d_re, two_z_d_im, d_sq_re, d_sq_im, n);
+    complex_add(sum1_re, sum1_im, dc_re, dc_im, n)
+}
+
+///  Build the complete perturbation step kernel.
+///  Each thread processes one pixel's perturbation iteration.
+pub open spec fn perturbation_kernel(
+    n_limbs: nat, frac_limbs: nat, n_threads: nat,
+) -> KernelSpec
+    recommends n_limbs > 0, frac_limbs < n_limbs,
+{
+    let (new_d_re, new_d_im) = perturbation_step_exprs(n_limbs, frac_limbs);
+    let out_stride = (2 * n_limbs) as nat;  //  2 complex components in output
+
+    KernelSpec {
+        guard: ArithExpr::Cmp(CmpOp::Lt,
+            Box::new(ArithExpr::Var(0)),
+            Box::new(ArithExpr::Const(n_threads as int))),
+        outputs: {
+            //  First n_limbs outputs: new δ_re
+            let re_outputs = Seq::new(n_limbs, |i: int| OutputSpec {
+                scatter: limb_scatter(out_stride, i as nat),
+                compute: new_d_re[i],
+            });
+            //  Next n_limbs outputs: new δ_im
+            let im_outputs = Seq::new(n_limbs, |i: int| OutputSpec {
+                scatter: limb_scatter(out_stride, (n_limbs + i) as nat),
+                compute: new_d_im[i],
+            });
+            re_outputs + im_outputs
+        },
+    }
+}
+
 } //  verus!
