@@ -583,19 +583,257 @@ pub proof fn lemma_schoolbook_result_correct(
 }
 
 //  ══════════════════════════════════════════════════════════════
-//  Karatsuba multiply: recursive splitting
+//  Generalized multi-limb ops: take Seq<ArithExpr> as inputs
 //  ══════════════════════════════════════════════════════════════
 //
-//  a * b = z0 + z1 * B^half + z2 * B^(2*half)
-//  where z0 = a_lo*b_lo, z2 = a_hi*b_hi,
-//        z1 = (a_lo+a_hi)*(b_lo+b_hi) - z0 - z2
-//
-//  For ArithExpr: each z is itself an ArithExpr sub-tree (either
-//  schoolbook for small n, or recursive Karatsuba for large n).
-//  The combine step uses multi-limb add/sub ArithExprs.
-//
-//  TODO: implement karatsuba_result_limb(a_buf, b_buf, n, limb)
-//  that recursively builds the ArithExpr tree, splitting at n/2
-//  and using schoolbook for n <= 4.
+//  Karatsuba's intermediate values (z0, z1, a_sum) are computed
+//  ArithExpr trees, not buffer reads. We generalize all multi-limb
+//  ops to take Seq<ArithExpr> inputs — the buffer-read versions
+//  become a special case.
+
+///  Generalized partial products: sum of a[j]*b[k-j] where a,b are ArithExpr sequences.
+pub open spec fn gen_partial_products(
+    a: Seq<ArithExpr>, b: Seq<ArithExpr>, k: nat, max_j: nat,
+) -> ArithExpr
+    decreases max_j,
+{
+    let n_a = a.len();
+    let n_b = b.len();
+    let valid = (max_j as int) < n_a && k >= max_j && ((k - max_j) as int) < n_b;
+    let term = if valid {
+        ArithExpr::Mul(Box::new(a[max_j as int]), Box::new(b[(k - max_j) as int]))
+    } else {
+        ArithExpr::Const(0)
+    };
+    if max_j == 0 { term }
+    else {
+        ArithExpr::Add(
+            Box::new(gen_partial_products(a, b, k, (max_j - 1) as nat)),
+            Box::new(term))
+    }
+}
+
+///  Generalized carry chain for multiplication.
+pub open spec fn gen_mul_carry(
+    a: Seq<ArithExpr>, b: Seq<ArithExpr>, max_j: nat, limb: nat,
+) -> ArithExpr
+    decreases limb,
+{
+    if limb == 0 { ArithExpr::Const(0) }
+    else {
+        let prev = (limb - 1) as nat;
+        ArithExpr::Div(
+            Box::new(ArithExpr::Add(
+                Box::new(gen_partial_products(a, b, prev, max_j)),
+                Box::new(gen_mul_carry(a, b, max_j, prev)))),
+            Box::new(ArithExpr::Const(LIMB_BASE())))
+    }
+}
+
+///  Generalized result limb for multiplication.
+pub open spec fn gen_mul_result_limb(
+    a: Seq<ArithExpr>, b: Seq<ArithExpr>, max_j: nat, limb: nat,
+) -> ArithExpr {
+    ArithExpr::Mod(
+        Box::new(ArithExpr::Add(
+            Box::new(gen_partial_products(a, b, limb, max_j)),
+            Box::new(gen_mul_carry(a, b, max_j, limb)))),
+        Box::new(ArithExpr::Const(LIMB_BASE())))
+}
+
+///  Generalized carry chain for addition of two ArithExpr sequences.
+pub open spec fn gen_add_carry(
+    a: Seq<ArithExpr>, b: Seq<ArithExpr>, limb: nat,
+) -> ArithExpr
+    decreases limb,
+{
+    if limb == 0 { ArithExpr::Const(0) }
+    else {
+        let prev = (limb - 1) as nat;
+        ArithExpr::Div(
+            Box::new(ArithExpr::Add(
+                Box::new(ArithExpr::Add(Box::new(a[prev as int]), Box::new(b[prev as int]))),
+                Box::new(gen_add_carry(a, b, prev)))),
+            Box::new(ArithExpr::Const(LIMB_BASE())))
+    }
+}
+
+///  Generalized result limb for addition.
+pub open spec fn gen_add_result_limb(
+    a: Seq<ArithExpr>, b: Seq<ArithExpr>, limb: nat,
+) -> ArithExpr {
+    ArithExpr::Mod(
+        Box::new(ArithExpr::Add(
+            Box::new(ArithExpr::Add(Box::new(a[limb as int]), Box::new(b[limb as int]))),
+            Box::new(gen_add_carry(a, b, limb)))),
+        Box::new(ArithExpr::Const(LIMB_BASE())))
+}
+
+///  Generalized subtraction with borrow chain (for z1 = z1_full - z0 - z2).
+pub open spec fn gen_sub_borrow(
+    a: Seq<ArithExpr>, b: Seq<ArithExpr>, limb: nat,
+) -> ArithExpr
+    decreases limb,
+{
+    if limb == 0 { ArithExpr::Const(0) }
+    else {
+        let prev = (limb - 1) as nat;
+        //  borrow = if (a[prev] - b[prev] - borrow_prev) < 0 then 1 else 0
+        //  Equivalently: borrow = (a[prev] - b[prev] - borrow_prev + BASE) / BASE
+        //  when result is in [-BASE, 2*BASE), quotient is 0 or 1.
+        //  Actually: (BASE + a - b - borrow) / BASE gives 0 if a-b-borrow < 0, 1 if >= 0.
+        //  So borrow = 1 - (BASE + a - b - borrow_prev) / BASE.
+        //  Simpler: just use the div/mod pattern like add.
+        //  diff = a[prev] - b[prev] + BASE - borrow_prev
+        //  borrow = 1 - diff / BASE
+        let diff = ArithExpr::Sub(
+            Box::new(ArithExpr::Add(
+                Box::new(ArithExpr::Sub(Box::new(a[prev as int]), Box::new(b[prev as int]))),
+                Box::new(ArithExpr::Const(LIMB_BASE())))),
+            Box::new(gen_sub_borrow(a, b, prev)));
+        ArithExpr::Sub(
+            Box::new(ArithExpr::Const(1)),
+            Box::new(ArithExpr::Div(Box::new(diff), Box::new(ArithExpr::Const(LIMB_BASE())))))
+    }
+}
+
+///  Generalized result limb for subtraction.
+pub open spec fn gen_sub_result_limb(
+    a: Seq<ArithExpr>, b: Seq<ArithExpr>, limb: nat,
+) -> ArithExpr {
+    //  result = (a[limb] - b[limb] + BASE - borrow) % BASE
+    ArithExpr::Mod(
+        Box::new(ArithExpr::Sub(
+            Box::new(ArithExpr::Add(
+                Box::new(ArithExpr::Sub(Box::new(a[limb as int]), Box::new(b[limb as int]))),
+                Box::new(ArithExpr::Const(LIMB_BASE())))),
+            Box::new(gen_sub_borrow(a, b, limb)))),
+        Box::new(ArithExpr::Const(LIMB_BASE())))
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  Karatsuba multiply: recursive ArithExpr construction
+//  ══════════════════════════════════════════════════════════════
+
+///  Build ArithExpr inputs from buffer reads with offset.
+pub open spec fn buffer_limbs(
+    buf: nat, n_total: nat, offset: nat, count: nat,
+) -> Seq<ArithExpr> {
+    Seq::new(count, |j: int| limb_read(buf, n_total, (offset + j) as nat))
+}
+
+///  Result limbs of a multiply as a Seq<ArithExpr>.
+///  For n ≤ 4: schoolbook. For n > 4: Karatsuba recursion.
+pub open spec fn mul_result_limbs(
+    a: Seq<ArithExpr>, b: Seq<ArithExpr>, n: nat,
+) -> Seq<ArithExpr>
+    recommends a.len() == n, b.len() == n, n > 0,
+    decreases n, 1nat,
+{
+    if n <= 4 {
+        //  Schoolbook base case: 2*n result limbs
+        let result_len = (2 * n) as nat;
+        let max_j = (n - 1) as nat;
+        Seq::new(result_len, |k: int| gen_mul_result_limb(a, b, max_j, k as nat))
+    } else {
+        karatsuba_combine(a, b, n)
+    }
+}
+
+///  Karatsuba recursive combine — separated for clarity.
+///  a * b = z0 + z1 * B^half + z2 * B^(2*half)
+pub open spec fn karatsuba_combine(
+    a: Seq<ArithExpr>, b: Seq<ArithExpr>, n: nat,
+) -> Seq<ArithExpr>
+    recommends a.len() == n, b.len() == n, n > 4,
+    decreases n, 0nat,
+{
+    if n <= 4 { Seq::empty() }  //  guard for termination (unreachable in practice)
+    else {
+    let half = n / 2;
+    let upper = (n - half) as nat;
+
+    //  Split inputs
+    let a_lo = a.subrange(0, half as int);
+    let a_hi = a.subrange(half as int, n as int);
+    let b_lo = b.subrange(0, half as int);
+    let b_hi = b.subrange(half as int, n as int);
+
+    //  Pad lo halves to `upper` limbs if needed (odd n)
+    let a_lo_p: Seq<ArithExpr> = if half < upper {
+        a_lo.push(ArithExpr::Const(0))
+    } else { a_lo };
+    let b_lo_p: Seq<ArithExpr> = if half < upper {
+        b_lo.push(ArithExpr::Const(0))
+    } else { b_lo };
+
+    //  z0 = a_lo * b_lo, z2 = a_hi * b_hi  (recursive, size ≤ ceil(n/2))
+    let z0: Seq<ArithExpr> = mul_result_limbs(a_lo_p, b_lo_p, upper);
+    let z2: Seq<ArithExpr> = mul_result_limbs(a_hi, b_hi, upper);
+
+    //  a_sum = a_lo + a_hi (upper+1 limbs including carry)
+    let sum_len = (upper + 1) as nat;
+    let a_sum: Seq<ArithExpr> = Seq::new(sum_len, |j: int|
+        if j < upper as int { gen_add_result_limb(a_lo_p, a_hi, j as nat) }
+        else { gen_add_carry(a_lo_p, a_hi, upper) });
+    let b_sum: Seq<ArithExpr> = Seq::new(sum_len, |j: int|
+        if j < upper as int { gen_add_result_limb(b_lo_p, b_hi, j as nat) }
+        else { gen_add_carry(b_lo_p, b_hi, upper) });
+
+    //  z1_full = a_sum * b_sum (recursive, size upper+1)
+    let z1_full: Seq<ArithExpr> = mul_result_limbs(a_sum, b_sum, sum_len);
+
+    //  z1 = z1_full - z0 - z2 (pad z0, z2 to match z1_full length)
+    let z1_len = (2 * sum_len) as nat;
+    let z0_pad: Seq<ArithExpr> = Seq::new(z1_len, |j: int|
+        if j < z0.len() { z0[j] } else { ArithExpr::Const(0) });
+    let z2_pad: Seq<ArithExpr> = Seq::new(z1_len, |j: int|
+        if j < z2.len() { z2[j] } else { ArithExpr::Const(0) });
+    let z1_tmp: Seq<ArithExpr> = Seq::new(z1_len, |j: int|
+        gen_sub_result_limb(z1_full, z0_pad, j as nat));
+    let z1: Seq<ArithExpr> = Seq::new(z1_len, |j: int|
+        gen_sub_result_limb(z1_tmp, z2_pad, j as nat));
+
+    //  Combine: result = z0 + z1*B^half + z2*B^(2*half)
+    let result_len = (2 * n) as nat;
+    let z0_ext: Seq<ArithExpr> = Seq::new(result_len, |k: int|
+        if k < z0.len() { z0[k] } else { ArithExpr::Const(0) });
+    let z1_shift: Seq<ArithExpr> = Seq::new(result_len, |k: int|
+        if k >= half as int && (k - half as int) < z1.len() {
+            z1[k - half as int]
+        } else { ArithExpr::Const(0) });
+    let z2_shift: Seq<ArithExpr> = Seq::new(result_len, |k: int|
+        if k >= (2 * half) as int && (k - (2 * half) as int) < z2.len() {
+            z2[k - (2 * half) as int]
+        } else { ArithExpr::Const(0) });
+
+    //  Two-pass addition
+    let temp: Seq<ArithExpr> = Seq::new(result_len, |k: int|
+        gen_add_result_limb(z0_ext, z1_shift, k as nat));
+    Seq::new(result_len, |k: int|
+        gen_add_result_limb(temp, z2_shift, k as nat))
+    }  //  else
+}
+
+///  Build a Karatsuba multiply kernel from buffer reads.
+pub open spec fn karatsuba_mul_kernel(
+    a_buf: nat, b_buf: nat, n_limbs: nat, n_threads: nat,
+) -> KernelSpec
+    recommends n_limbs > 0,
+{
+    let a = buffer_limbs(a_buf, n_limbs, 0, n_limbs);
+    let b = buffer_limbs(b_buf, n_limbs, 0, n_limbs);
+    let result = mul_result_limbs(a, b, n_limbs);
+    KernelSpec {
+        guard: ArithExpr::Cmp(CmpOp::Lt,
+            Box::new(ArithExpr::Var(0)),
+            Box::new(ArithExpr::Const(n_threads as int))),
+        outputs: Seq::new(2 * n_limbs, |i: int|
+            OutputSpec {
+                scatter: limb_scatter(2 * n_limbs, i as nat),
+                compute: result[i],
+            }),
+    }
+}
 
 } //  verus!
