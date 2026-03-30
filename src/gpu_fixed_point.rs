@@ -48,28 +48,34 @@ pub open spec fn limb_scatter(n_limbs: nat, limb_idx: nat) -> ArithExpr {
 
 ///  The carry INTO limb position `limb` (0 for limb 0).
 ///  carry[i] = (a[i-1] + b[i-1] + carry[i-1]) / 2^32
-///  Mutual recursion: add_carry_expr calls add_full_sum with limb-1.
-///  Termination: (limb, 0) for carry, (limb, 1) for full_sum. Lexicographic decrease.
+///  The carry INTO limb position `limb` (0 for limb 0).
+///  carry[i] = (a[i-1] + b[i-1] + carry[i-1]) / 2^32
+///  Single recursion (no mutual recursion) for clean Z3 unfolding.
 pub open spec fn add_carry_expr(
     a_buf: nat, b_buf: nat, n_limbs: nat, limb: nat,
 ) -> ArithExpr
-    decreases limb, 0nat,
+    decreases limb,
 {
     if limb == 0 {
         ArithExpr::Const(0)
     } else {
+        //  carry[limb] = (a[limb-1] + b[limb-1] + carry[limb-1]) / LIMB_BASE
+        let prev = (limb - 1) as nat;
         ArithExpr::Div(
-            Box::new(add_full_sum(a_buf, b_buf, n_limbs, (limb - 1) as nat)),
+            Box::new(ArithExpr::Add(
+                Box::new(ArithExpr::Add(
+                    Box::new(limb_read(a_buf, n_limbs, prev)),
+                    Box::new(limb_read(b_buf, n_limbs, prev)))),
+                Box::new(add_carry_expr(a_buf, b_buf, n_limbs, prev)))),
             Box::new(ArithExpr::Const(LIMB_BASE())))
     }
 }
 
 ///  The full (unwrapped) sum at limb position `limb`: a[limb] + b[limb] + carry_in.
+///  Non-recursive — just composes limb reads with carry.
 pub open spec fn add_full_sum(
     a_buf: nat, b_buf: nat, n_limbs: nat, limb: nat,
-) -> ArithExpr
-    decreases limb, 1nat,
-{
+) -> ArithExpr {
     ArithExpr::Add(
         Box::new(ArithExpr::Add(
             Box::new(limb_read(a_buf, n_limbs, limb)),
@@ -163,6 +169,37 @@ pub proof fn lemma_limb_read_eval(
 }
 
 //  ══════════════════════════════════════════════════════════════
+//  ArithExpr evaluation helpers — trivial by definition, but give
+//  Z3 intermediate steps for deeply nested expressions.
+//  ══════════════════════════════════════════════════════════════
+
+pub proof fn lemma_eval_add(a: ArithExpr, b: ArithExpr, env: Seq<int>, arrays: Seq<Seq<int>>)
+    ensures arith_eval_with_arrays(
+        &ArithExpr::Add(Box::new(a), Box::new(b)), env, arrays)
+        == arith_eval_with_arrays(&a, env, arrays) + arith_eval_with_arrays(&b, env, arrays),
+{}
+
+pub proof fn lemma_eval_div(num: ArithExpr, den: ArithExpr, env: Seq<int>, arrays: Seq<Seq<int>>)
+    ensures arith_eval_with_arrays(
+        &ArithExpr::Div(Box::new(num), Box::new(den)), env, arrays)
+        == if arith_eval_with_arrays(&den, env, arrays) != 0 {
+            arith_eval_with_arrays(&num, env, arrays) / arith_eval_with_arrays(&den, env, arrays)
+        } else { 0 },
+{}
+
+pub proof fn lemma_eval_mod(num: ArithExpr, den: ArithExpr, env: Seq<int>, arrays: Seq<Seq<int>>)
+    ensures arith_eval_with_arrays(
+        &ArithExpr::Mod(Box::new(num), Box::new(den)), env, arrays)
+        == if arith_eval_with_arrays(&den, env, arrays) != 0 {
+            arith_eval_with_arrays(&num, env, arrays) % arith_eval_with_arrays(&den, env, arrays)
+        } else { 0 },
+{}
+
+pub proof fn lemma_eval_const(c: int, env: Seq<int>, arrays: Seq<Seq<int>>)
+    ensures arith_eval_with_arrays(&ArithExpr::Const(c), env, arrays) == c,
+{}
+
+//  ══════════════════════════════════════════════════════════════
 //  Correctness: ArithExpr carry chain matches mathematical carry
 //  ══════════════════════════════════════════════════════════════
 
@@ -212,34 +249,32 @@ pub proof fn lemma_add_carry_correct(
 
         //  IH: carry at prev is correct
         lemma_add_carry_correct(a_buf, b_buf, n_limbs, prev, env, arrays);
-        let carry_prev = arith_eval_with_arrays(
-            &add_carry_expr(a_buf, b_buf, n_limbs, prev), env, arrays);
-        assert(carry_prev == limb_carry(a_vals, b_vals, prev));
 
         //  Limb reads evaluate to array values
         lemma_limb_read_eval(a_buf, n_limbs, prev, env, arrays, tid);
         lemma_limb_read_eval(b_buf, n_limbs, prev, env, arrays, tid);
-        let a_prev = arith_eval_with_arrays(&limb_read(a_buf, n_limbs, prev), env, arrays);
-        let b_prev = arith_eval_with_arrays(&limb_read(b_buf, n_limbs, prev), env, arrays);
-        assert(a_prev == a_vals[prev as int]);
-        assert(b_prev == b_vals[prev as int]);
 
-        //  Full sum at prev = a[prev] + b[prev] + carry[prev]
-        let full_sum_expr = add_full_sum(a_buf, b_buf, n_limbs, prev);
-        let full_sum_val = arith_eval_with_arrays(&full_sum_expr, env, arrays);
-        assert(full_sum_val == a_prev + b_prev + carry_prev);
+        //  Build the ArithExpr pieces that add_carry_expr(limb) unfolds to:
+        let a_read = limb_read(a_buf, n_limbs, prev);
+        let b_read = limb_read(b_buf, n_limbs, prev);
+        let carry_prev_expr = add_carry_expr(a_buf, b_buf, n_limbs, prev);
+        let ab_sum = ArithExpr::Add(Box::new(a_read), Box::new(b_read));
+        let full_sum = ArithExpr::Add(Box::new(ab_sum), Box::new(carry_prev_expr));
+        let base_const = ArithExpr::Const(LIMB_BASE());
 
-        //  Carry at limb = full_sum / LIMB_BASE
-        let carry_expr = add_carry_expr(a_buf, b_buf, n_limbs, limb);
-        assert(full_sum_val >= 0) by (nonlinear_arith)
-            requires a_prev >= 0, b_prev >= 0, carry_prev >= 0;
-        assert(arith_eval_with_arrays(&carry_expr, env, arrays)
-            == full_sum_val / LIMB_BASE());
+        //  Step-by-step evaluation using helpers
+        lemma_eval_add(a_read, b_read, env, arrays);
+        lemma_eval_add(ab_sum, carry_prev_expr, env, arrays);
+        lemma_eval_const(LIMB_BASE(), env, arrays);
+        lemma_eval_div(full_sum, base_const, env, arrays);
 
-        //  And limb_carry(limb) = (a[prev] + b[prev] + limb_carry(prev)) / LIMB_BASE
-        assert(limb_carry(a_vals, b_vals, limb)
-            == (a_vals[prev as int] + b_vals[prev as int] + limb_carry(a_vals, b_vals, prev))
-               / LIMB_BASE());
+        //  Now Z3 knows:
+        //  eval(ab_sum) == a_vals[prev] + b_vals[prev]
+        //  eval(full_sum) == a_vals[prev] + b_vals[prev] + limb_carry(prev)
+        //  eval(Div(full_sum, BASE)) == eval(full_sum) / LIMB_BASE
+
+        //  Connect: add_carry_expr(limb) IS Div(full_sum, base_const)
+        reveal_with_fuel(add_carry_expr, 2);
     }
 }
 
@@ -274,12 +309,293 @@ pub proof fn lemma_add_result_correct(
     }),
 {
     let tid = env[0];
-    //  add_result_limb = Mod(add_full_sum, LIMB_BASE)
-    //  add_full_sum = a[limb] + b[limb] + carry[limb]
-    //  Result = (a[limb] + b[limb] + carry[limb]) % LIMB_BASE = limb_result(...)
+
+    //  Carry is correct
     lemma_add_carry_correct(a_buf, b_buf, n_limbs, limb, env, arrays);
+
+    //  Limb reads evaluate to array values
     lemma_limb_read_eval(a_buf, n_limbs, limb, env, arrays, tid);
     lemma_limb_read_eval(b_buf, n_limbs, limb, env, arrays, tid);
+
+    //  Decompose add_result_limb = Mod(Add(Add(a_read, b_read), carry), BASE)
+    let a_read = limb_read(a_buf, n_limbs, limb);
+    let b_read = limb_read(b_buf, n_limbs, limb);
+    let carry_expr = add_carry_expr(a_buf, b_buf, n_limbs, limb);
+    let ab_sum = ArithExpr::Add(Box::new(a_read), Box::new(b_read));
+    let full_sum = ArithExpr::Add(Box::new(ab_sum), Box::new(carry_expr));
+    let base_const = ArithExpr::Const(LIMB_BASE());
+
+    lemma_eval_add(a_read, b_read, env, arrays);
+    lemma_eval_add(ab_sum, carry_expr, env, arrays);
+    lemma_eval_const(LIMB_BASE(), env, arrays);
+    lemma_eval_mod(full_sum, base_const, env, arrays);
 }
+
+//  ══════════════════════════════════════════════════════════════
+//  Schoolbook multiply: base case for Karatsuba
+//  ══════════════════════════════════════════════════════════════
+
+///  Sum of partial products for result limb `k`:
+///  Σ_{j=0}^{max_j} a[j] * b[k-j]  (only where both indices are valid)
+pub open spec fn partial_products(
+    a_buf: nat, b_buf: nat, n_limbs: nat, k: nat, max_j: nat,
+) -> ArithExpr
+    decreases max_j,
+{
+    //  Is this term valid? j < n and k-j < n
+    let valid = max_j < n_limbs && k >= max_j && (k - max_j) < n_limbs;
+    let term = if valid {
+        ArithExpr::Mul(
+            Box::new(limb_read(a_buf, n_limbs, max_j)),
+            Box::new(limb_read(b_buf, n_limbs, (k - max_j) as nat)))
+    } else {
+        ArithExpr::Const(0)
+    };
+    if max_j == 0 {
+        term
+    } else {
+        ArithExpr::Add(
+            Box::new(partial_products(a_buf, b_buf, n_limbs, k, (max_j - 1) as nat)),
+            Box::new(term))
+    }
+}
+
+///  Carry into result limb `limb` of schoolbook multiply.
+///  carry[0] = 0
+///  carry[k] = (partial_products(k-1) + carry[k-1]) / BASE
+pub open spec fn schoolbook_carry(
+    a_buf: nat, b_buf: nat, n_limbs: nat, limb: nat,
+) -> ArithExpr
+    decreases limb,
+{
+    if limb == 0 {
+        ArithExpr::Const(0)
+    } else {
+        let prev = (limb - 1) as nat;
+        ArithExpr::Div(
+            Box::new(ArithExpr::Add(
+                Box::new(partial_products(a_buf, b_buf, n_limbs, prev, (n_limbs - 1) as nat)),
+                Box::new(schoolbook_carry(a_buf, b_buf, n_limbs, prev)))),
+            Box::new(ArithExpr::Const(LIMB_BASE())))
+    }
+}
+
+///  Result limb `limb` of schoolbook multiply: (acc + carry) % BASE.
+pub open spec fn schoolbook_result_limb(
+    a_buf: nat, b_buf: nat, n_limbs: nat, limb: nat,
+) -> ArithExpr {
+    ArithExpr::Mod(
+        Box::new(ArithExpr::Add(
+            Box::new(partial_products(a_buf, b_buf, n_limbs, limb, (n_limbs - 1) as nat)),
+            Box::new(schoolbook_carry(a_buf, b_buf, n_limbs, limb)))),
+        Box::new(ArithExpr::Const(LIMB_BASE())))
+}
+
+///  Build a schoolbook multiply kernel: 2*n output limbs.
+pub open spec fn schoolbook_mul_kernel(
+    a_buf: nat, b_buf: nat, n_limbs: nat, n_threads: nat,
+) -> KernelSpec
+    recommends n_limbs > 0,
+{
+    KernelSpec {
+        guard: ArithExpr::Cmp(CmpOp::Lt,
+            Box::new(ArithExpr::Var(0)),
+            Box::new(ArithExpr::Const(n_threads as int))),
+        outputs: Seq::new(2 * n_limbs, |i: int|
+            OutputSpec {
+                scatter: limb_scatter(2 * n_limbs, i as nat),
+                compute: schoolbook_result_limb(a_buf, b_buf, n_limbs, i as nat),
+            }),
+    }
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  Mathematical specs for schoolbook multiply (for proof)
+//  ══════════════════════════════════════════════════════════════
+
+///  Mathematical partial product accumulator for result limb k.
+pub open spec fn math_partial_products(a_vals: Seq<int>, b_vals: Seq<int>, k: nat, max_j: nat) -> int
+    decreases max_j,
+{
+    let valid = max_j < a_vals.len() && k >= max_j && (k - max_j) < b_vals.len();
+    let term = if valid { a_vals[max_j as int] * b_vals[(k - max_j) as int] } else { 0 };
+    if max_j == 0 { term }
+    else { math_partial_products(a_vals, b_vals, k, (max_j - 1) as nat) + term }
+}
+
+///  Mathematical carry for schoolbook multiply.
+pub open spec fn math_schoolbook_carry(a_vals: Seq<int>, b_vals: Seq<int>, n: nat, limb: nat) -> int
+    decreases limb,
+{
+    if limb == 0 { 0 }
+    else {
+        let prev = (limb - 1) as nat;
+        (math_partial_products(a_vals, b_vals, prev, (n - 1) as nat)
+            + math_schoolbook_carry(a_vals, b_vals, n, prev)) / LIMB_BASE()
+    }
+}
+
+///  Mathematical result limb for schoolbook multiply.
+pub open spec fn math_schoolbook_result(a_vals: Seq<int>, b_vals: Seq<int>, n: nat, limb: nat) -> int {
+    (math_partial_products(a_vals, b_vals, limb, (n - 1) as nat)
+        + math_schoolbook_carry(a_vals, b_vals, n, limb)) % LIMB_BASE()
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  Schoolbook correctness proofs
+//  ══════════════════════════════════════════════════════════════
+
+///  Partial products ArithExpr evaluates to mathematical partial products.
+pub proof fn lemma_partial_products_correct(
+    a_buf: nat, b_buf: nat, n_limbs: nat, k: nat, max_j: nat,
+    env: Seq<int>, arrays: Seq<Seq<int>>,
+)
+    requires
+        env.len() > 0,
+        env[0] >= 0,
+        (a_buf as int) < arrays.len(),
+        (b_buf as int) < arrays.len(),
+        n_limbs > 0,
+        env[0] * (n_limbs as int) + (n_limbs as int) <= arrays[a_buf as int].len(),
+        env[0] * (n_limbs as int) + (n_limbs as int) <= arrays[b_buf as int].len(),
+    ensures ({
+        let tid = env[0];
+        let a_vals = Seq::new(n_limbs, |i: int| arrays[a_buf as int][tid * (n_limbs as int) + i]);
+        let b_vals = Seq::new(n_limbs, |i: int| arrays[b_buf as int][tid * (n_limbs as int) + i]);
+        arith_eval_with_arrays(
+            &partial_products(a_buf, b_buf, n_limbs, k, max_j), env, arrays)
+            == math_partial_products(a_vals, b_vals, k, max_j)
+    }),
+    decreases max_j,
+{
+    let tid = env[0];
+    let a_vals = Seq::new(n_limbs, |i: int| arrays[a_buf as int][tid * (n_limbs as int) + i]);
+    let b_vals = Seq::new(n_limbs, |i: int| arrays[b_buf as int][tid * (n_limbs as int) + i]);
+
+    let valid = max_j < n_limbs && k >= max_j && (k - max_j) < n_limbs;
+
+    if valid {
+        lemma_limb_read_eval(a_buf, n_limbs, max_j, env, arrays, tid);
+        lemma_limb_read_eval(b_buf, n_limbs, (k - max_j) as nat, env, arrays, tid);
+    }
+
+    if max_j > 0 {
+        lemma_partial_products_correct(a_buf, b_buf, n_limbs, k, (max_j - 1) as nat, env, arrays);
+        //  Use eval helpers
+        let prev_expr = partial_products(a_buf, b_buf, n_limbs, k, (max_j - 1) as nat);
+        let term_expr = if valid {
+            ArithExpr::Mul(
+                Box::new(limb_read(a_buf, n_limbs, max_j)),
+                Box::new(limb_read(b_buf, n_limbs, (k - max_j) as nat)))
+        } else {
+            ArithExpr::Const(0)
+        };
+        lemma_eval_add(prev_expr, term_expr, env, arrays);
+    }
+}
+
+///  Schoolbook carry ArithExpr evaluates to mathematical carry.
+pub proof fn lemma_schoolbook_carry_correct(
+    a_buf: nat, b_buf: nat, n_limbs: nat, limb: nat,
+    env: Seq<int>, arrays: Seq<Seq<int>>,
+)
+    requires
+        env.len() > 0,
+        env[0] >= 0,
+        (a_buf as int) < arrays.len(),
+        (b_buf as int) < arrays.len(),
+        n_limbs > 0,
+        limb <= 2 * n_limbs,
+        env[0] * (n_limbs as int) + (n_limbs as int) <= arrays[a_buf as int].len(),
+        env[0] * (n_limbs as int) + (n_limbs as int) <= arrays[b_buf as int].len(),
+    ensures ({
+        let tid = env[0];
+        let a_vals = Seq::new(n_limbs, |i: int| arrays[a_buf as int][tid * (n_limbs as int) + i]);
+        let b_vals = Seq::new(n_limbs, |i: int| arrays[b_buf as int][tid * (n_limbs as int) + i]);
+        arith_eval_with_arrays(
+            &schoolbook_carry(a_buf, b_buf, n_limbs, limb), env, arrays)
+            == math_schoolbook_carry(a_vals, b_vals, n_limbs, limb)
+    }),
+    decreases limb,
+{
+    let tid = env[0];
+    let a_vals = Seq::new(n_limbs, |i: int| arrays[a_buf as int][tid * (n_limbs as int) + i]);
+    let b_vals = Seq::new(n_limbs, |i: int| arrays[b_buf as int][tid * (n_limbs as int) + i]);
+
+    if limb == 0 {
+        // Both sides are 0
+    } else {
+        let prev = (limb - 1) as nat;
+        //  IH
+        lemma_schoolbook_carry_correct(a_buf, b_buf, n_limbs, prev, env, arrays);
+        //  Partial products correct
+        lemma_partial_products_correct(a_buf, b_buf, n_limbs, prev, (n_limbs - 1) as nat, env, arrays);
+
+        //  Structural decomposition using eval helpers
+        let pp_expr = partial_products(a_buf, b_buf, n_limbs, prev, (n_limbs - 1) as nat);
+        let carry_prev_expr = schoolbook_carry(a_buf, b_buf, n_limbs, prev);
+        let sum_expr = ArithExpr::Add(Box::new(pp_expr), Box::new(carry_prev_expr));
+        let base_expr = ArithExpr::Const(LIMB_BASE());
+
+        lemma_eval_add(pp_expr, carry_prev_expr, env, arrays);
+        lemma_eval_const(LIMB_BASE(), env, arrays);
+        lemma_eval_div(sum_expr, base_expr, env, arrays);
+
+        reveal_with_fuel(schoolbook_carry, 2);
+    }
+}
+
+///  Schoolbook result limb ArithExpr evaluates to mathematical result.
+pub proof fn lemma_schoolbook_result_correct(
+    a_buf: nat, b_buf: nat, n_limbs: nat, limb: nat,
+    env: Seq<int>, arrays: Seq<Seq<int>>,
+)
+    requires
+        env.len() > 0,
+        env[0] >= 0,
+        (a_buf as int) < arrays.len(),
+        (b_buf as int) < arrays.len(),
+        n_limbs > 0,
+        limb < 2 * n_limbs,
+        env[0] * (n_limbs as int) + (n_limbs as int) <= arrays[a_buf as int].len(),
+        env[0] * (n_limbs as int) + (n_limbs as int) <= arrays[b_buf as int].len(),
+    ensures ({
+        let tid = env[0];
+        let a_vals = Seq::new(n_limbs, |i: int| arrays[a_buf as int][tid * (n_limbs as int) + i]);
+        let b_vals = Seq::new(n_limbs, |i: int| arrays[b_buf as int][tid * (n_limbs as int) + i]);
+        arith_eval_with_arrays(
+            &schoolbook_result_limb(a_buf, b_buf, n_limbs, limb), env, arrays)
+            == math_schoolbook_result(a_vals, b_vals, n_limbs, limb)
+    }),
+{
+    let tid = env[0];
+    lemma_schoolbook_carry_correct(a_buf, b_buf, n_limbs, limb, env, arrays);
+    lemma_partial_products_correct(a_buf, b_buf, n_limbs, limb, (n_limbs - 1) as nat, env, arrays);
+
+    let pp_expr = partial_products(a_buf, b_buf, n_limbs, limb, (n_limbs - 1) as nat);
+    let carry_expr = schoolbook_carry(a_buf, b_buf, n_limbs, limb);
+    let sum_expr = ArithExpr::Add(Box::new(pp_expr), Box::new(carry_expr));
+    let base_expr = ArithExpr::Const(LIMB_BASE());
+
+    lemma_eval_add(pp_expr, carry_expr, env, arrays);
+    lemma_eval_const(LIMB_BASE(), env, arrays);
+    lemma_eval_mod(sum_expr, base_expr, env, arrays);
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  Karatsuba multiply: recursive splitting
+//  ══════════════════════════════════════════════════════════════
+//
+//  a * b = z0 + z1 * B^half + z2 * B^(2*half)
+//  where z0 = a_lo*b_lo, z2 = a_hi*b_hi,
+//        z1 = (a_lo+a_hi)*(b_lo+b_hi) - z0 - z2
+//
+//  For ArithExpr: each z is itself an ArithExpr sub-tree (either
+//  schoolbook for small n, or recursive Karatsuba for large n).
+//  The combine step uses multi-limb add/sub ArithExprs.
+//
+//  TODO: implement karatsuba_result_limb(a_buf, b_buf, n, limb)
+//  that recursively builds the ArithExpr tree, splitting at n/2
+//  and using schoolbook for n <= 4.
 
 } //  verus!
