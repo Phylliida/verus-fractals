@@ -1001,4 +1001,258 @@ pub open spec fn perturbation_kernel(
     }
 }
 
+//  ══════════════════════════════════════════════════════════════
+//  Multi-limb comparison and magnitude
+//  ══════════════════════════════════════════════════════════════
+
+///  Multi-limb greater-than: returns 1 if a > b, 0 otherwise.
+///  Compares from MSB to LSB using cascading Cmp nodes.
+pub open spec fn multi_limb_gt(a: Seq<ArithExpr>, b: Seq<ArithExpr>, limb: nat) -> ArithExpr
+    decreases limb,
+{
+    //  At limb: if a[limb] > b[limb] → 1
+    //           if a[limb] == b[limb] → recurse to lower limbs
+    //           if a[limb] < b[limb] → 0
+    let gt_here = ArithExpr::Cmp(CmpOp::Gt, Box::new(a[limb as int]), Box::new(b[limb as int]));
+    if limb == 0 { gt_here }
+    else {
+        let eq_here = ArithExpr::Cmp(CmpOp::Eq, Box::new(a[limb as int]), Box::new(b[limb as int]));
+        let lower = multi_limb_gt(a, b, (limb - 1) as nat);
+        //  gt_here + eq_here * lower  (disjoint cases, so Add works as OR)
+        ArithExpr::Add(
+            Box::new(gt_here),
+            Box::new(ArithExpr::Mul(Box::new(eq_here), Box::new(lower))))
+    }
+}
+
+///  Magnitude squared: re² + im² (truncated to n limbs).
+pub open spec fn magnitude_sq(
+    re: Seq<ArithExpr>, im: Seq<ArithExpr>, n: nat, frac_limbs: nat,
+) -> Seq<ArithExpr> {
+    let re_sq = mul_truncate(re, re, n, frac_limbs);
+    let im_sq = mul_truncate(im, im, n, frac_limbs);
+    add_limbs_seq(re_sq, im_sq, n)
+}
+
+///  Escape check: |Z + δ|² > threshold (e.g., 4 in fixed-point).
+///  Returns ArithExpr that evaluates to 1 if escaped, 0 if not.
+pub open spec fn escape_check(
+    z_re: Seq<ArithExpr>, z_im: Seq<ArithExpr>,
+    d_re: Seq<ArithExpr>, d_im: Seq<ArithExpr>,
+    threshold: Seq<ArithExpr>,
+    n: nat, frac_limbs: nat,
+) -> ArithExpr
+    recommends n > 0,
+{
+    let total_re = add_limbs_seq(z_re, d_re, n);
+    let total_im = add_limbs_seq(z_im, d_im, n);
+    let mag_sq = magnitude_sq(total_re, total_im, n, frac_limbs);
+    multi_limb_gt(mag_sq, threshold, (n - 1) as nat)
+}
+
+///  Glitch check: |δ|² > |Z|².
+///  Returns ArithExpr that evaluates to 1 if glitched, 0 if not.
+pub open spec fn glitch_check(
+    z_re: Seq<ArithExpr>, z_im: Seq<ArithExpr>,
+    d_re: Seq<ArithExpr>, d_im: Seq<ArithExpr>,
+    n: nat, frac_limbs: nat,
+) -> ArithExpr
+    recommends n > 0,
+{
+    let z_mag_sq = magnitude_sq(z_re, z_im, n, frac_limbs);
+    let d_mag_sq = magnitude_sq(d_re, d_im, n, frac_limbs);
+    multi_limb_gt(d_mag_sq, z_mag_sq, (n - 1) as nat)
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  Orbit computation kernel: Z_{n+1} = Z_n² + c
+//  ══════════════════════════════════════════════════════════════
+
+///  Single orbit step: Z' = Z² + c. Returns (new_Z_re, new_Z_im).
+pub open spec fn orbit_step_exprs(
+    z_re: Seq<ArithExpr>, z_im: Seq<ArithExpr>,
+    c_re: Seq<ArithExpr>, c_im: Seq<ArithExpr>,
+    n: nat, frac_limbs: nat,
+) -> (Seq<ArithExpr>, Seq<ArithExpr>) {
+    let (sq_re, sq_im) = complex_square(z_re, z_im, n, frac_limbs);
+    complex_add(sq_re, sq_im, c_re, c_im, n)
+}
+
+///  Orbit computation kernel.
+///  Each thread computes one reference orbit.
+///  Reads c from input, iteratively computes Z = Z² + c,
+///  writes each Z_n to a flat orbit buffer.
+///
+///  Buffer layout:
+///    buf 0: c_re        [n_orbits × n_limbs]   — reference point real
+///    buf 1: c_im        [n_orbits × n_limbs]   — reference point imag
+///    buf 2: Z_re_cur    [n_orbits × n_limbs]   — current Z real (updated in-place)
+///    buf 3: Z_im_cur    [n_orbits × n_limbs]   — current Z imag (updated in-place)
+///    buf 4: orbit_re    [n_orbits × max_iter × n_limbs] — output: all Z_re history
+///    buf 5: orbit_im    [n_orbits × max_iter × n_limbs] — output: all Z_im history
+///    buf 6: iter_count  [n_orbits]              — current iteration counter
+pub open spec fn orbit_kernel(n_limbs: nat, frac_limbs: nat, n_orbits: nat) -> KernelSpec
+    recommends n_limbs > 0, frac_limbs < n_limbs,
+{
+    let n = n_limbs;
+    let c_re = buffer_limbs(0, n, 0, n);
+    let c_im = buffer_limbs(1, n, 0, n);
+    let z_re = buffer_limbs(2, n, 0, n);
+    let z_im = buffer_limbs(3, n, 0, n);
+
+    //  Compute Z' = Z² + c
+    let (new_z_re, new_z_im) = orbit_step_exprs(z_re, z_im, c_re, c_im, n, frac_limbs);
+
+    //  Current iteration index (for writing to orbit history)
+    let iter_idx = ArithExpr::Index(6, Box::new(ArithExpr::Var(0)));
+
+    KernelSpec {
+        guard: ArithExpr::Cmp(CmpOp::Lt,
+            Box::new(ArithExpr::Var(0)),
+            Box::new(ArithExpr::Const(n_orbits as int))),
+        outputs: {
+            //  Update Z_re_cur in-place (buf 2)
+            let z_re_out = Seq::new(n, |j: int| OutputSpec {
+                scatter: limb_scatter(n, j as nat),
+                compute: new_z_re[j],
+            });
+            //  Update Z_im_cur in-place (buf 3)
+            let z_im_out = Seq::new(n, |j: int| OutputSpec {
+                scatter: limb_scatter(n, j as nat),
+                compute: new_z_im[j],
+            });
+            //  Increment iteration counter (buf 6)
+            let iter_out = seq![OutputSpec {
+                scatter: ArithExpr::Var(0),
+                compute: ArithExpr::Add(Box::new(iter_idx), Box::new(ArithExpr::Const(1))),
+            }];
+            z_re_out + z_im_out + iter_out
+        },
+    }
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  Full perturbation kernel with escape + glitch detection
+//  ══════════════════════════════════════════════════════════════
+
+///  Select expression: if cond == 1 then a else b.
+///  cond must be 0 or 1. Computes: cond * a + (1 - cond) * b.
+pub open spec fn select_expr(cond: ArithExpr, a: ArithExpr, b: ArithExpr) -> ArithExpr {
+    //  cond * a + (1 - cond) * b, where cond is 0 or 1
+    ArithExpr::Add(
+        Box::new(ArithExpr::Mul(Box::new(cond), Box::new(a))),
+        Box::new(ArithExpr::Mul(
+            Box::new(ArithExpr::Sub(
+                Box::new(ArithExpr::Const(1)),
+                Box::new(cond))),
+            Box::new(b))))
+}
+
+///  Select between two multi-limb sequences based on a condition.
+pub open spec fn select_limbs(
+    cond: ArithExpr, a: Seq<ArithExpr>, b: Seq<ArithExpr>, n: nat,
+) -> Seq<ArithExpr> {
+    Seq::new(n, |j: int| select_expr(cond, a[j], b[j]))
+}
+
+///  Perturbation step with escape detection and glitch flagging.
+///
+///  Buffer layout:
+///    buf 0: orbit_re     [max_iter × n_limbs]   — reference orbit (shared, read-only)
+///    buf 1: orbit_im     [max_iter × n_limbs]   — reference orbit (shared, read-only)
+///    buf 2: δ_re         [n_pixels × n_limbs]   — perturbation real (updated)
+///    buf 3: δ_im         [n_pixels × n_limbs]   — perturbation imag (updated)
+///    buf 4: Δc_re        [n_pixels × n_limbs]   — pixel offset (constant)
+///    buf 5: Δc_im        [n_pixels × n_limbs]   — pixel offset (constant)
+///    buf 6: iter_count   [n_pixels]              — iteration counter (incremented)
+///    buf 7: escaped      [n_pixels]              — escape flag (0→1 when escaped)
+///    buf 8: glitched     [n_pixels]              — glitch flag (0→1 when |δ|>|Z|)
+///    buf 9: threshold    [n_limbs]               — escape radius² in fixed-point (shared)
+pub open spec fn perturbation_kernel_full(
+    n_limbs: nat, frac_limbs: nat, n_pixels: nat,
+) -> KernelSpec
+    recommends n_limbs > 0, frac_limbs < n_limbs,
+{
+    let n = n_limbs;
+
+    //  Read current iteration to index into orbit buffer
+    let iter_idx = ArithExpr::Index(6, Box::new(ArithExpr::Var(0)));
+    let escaped_flag = ArithExpr::Index(7, Box::new(ArithExpr::Var(0)));
+
+    //  not_escaped = 1 - escaped (0 or 1)
+    let not_escaped = ArithExpr::Sub(
+        Box::new(ArithExpr::Const(1)), Box::new(escaped_flag));
+
+    //  Read Z_n from orbit buffer at position iter * n_limbs + j
+    let z_re = Seq::new(n, |j: int| ArithExpr::Index(0, Box::new(
+        ArithExpr::Add(
+            Box::new(ArithExpr::Mul(Box::new(iter_idx), Box::new(ArithExpr::Const(n as int)))),
+            Box::new(ArithExpr::Const(j))))));
+    let z_im = Seq::new(n, |j: int| ArithExpr::Index(1, Box::new(
+        ArithExpr::Add(
+            Box::new(ArithExpr::Mul(Box::new(iter_idx), Box::new(ArithExpr::Const(n as int)))),
+            Box::new(ArithExpr::Const(j))))));
+
+    //  Read current δ, Δc
+    let d_re = buffer_limbs(2, n, 0, n);
+    let d_im = buffer_limbs(3, n, 0, n);
+    let dc_re = buffer_limbs(4, n, 0, n);
+    let dc_im = buffer_limbs(5, n, 0, n);
+    let threshold = Seq::new(n, |j: int| ArithExpr::Index(9, Box::new(ArithExpr::Const(j))));
+
+    //  Compute perturbation step: δ' = 2Zδ + δ² + Δc
+    let (two_z_re, two_z_im) = complex_double(z_re, z_im, n);
+    let (two_z_d_re, two_z_d_im) = complex_mul(two_z_re, two_z_im, d_re, d_im, n, frac_limbs);
+    let (d_sq_re, d_sq_im) = complex_square(d_re, d_im, n, frac_limbs);
+    let (sum1_re, sum1_im) = complex_add(two_z_d_re, two_z_d_im, d_sq_re, d_sq_im, n);
+    let (new_d_re, new_d_im) = complex_add(sum1_re, sum1_im, dc_re, dc_im, n);
+
+    //  Escape check: |Z + δ'|² > threshold
+    let esc = escape_check(z_re, z_im, new_d_re, new_d_im, threshold, n, frac_limbs);
+
+    //  Glitch check: |δ'|² > |Z|²
+    let glitch = glitch_check(z_re, z_im, new_d_re, new_d_im, n, frac_limbs);
+
+    //  Masked updates: only update if not already escaped
+    //  δ_out = not_escaped ? new_δ : old_δ
+    let masked_d_re = select_limbs(not_escaped, new_d_re, d_re, n);
+    let masked_d_im = select_limbs(not_escaped, new_d_im, d_im, n);
+    //  iter_out = iter + not_escaped  (increment only if still active)
+    let new_iter = ArithExpr::Add(Box::new(iter_idx), Box::new(not_escaped));
+    //  escaped_out = escaped OR esc  (once escaped, stays escaped)
+    //  = max(escaped, esc) = escaped + (1-escaped)*esc
+    let new_escaped = ArithExpr::Add(
+        Box::new(escaped_flag),
+        Box::new(ArithExpr::Mul(Box::new(not_escaped), Box::new(esc))));
+    //  glitched_out = glitched OR glitch
+    let glitched_flag = ArithExpr::Index(8, Box::new(ArithExpr::Var(0)));
+    let not_glitched = ArithExpr::Sub(
+        Box::new(ArithExpr::Const(1)), Box::new(glitched_flag));
+    let new_glitched = ArithExpr::Add(
+        Box::new(glitched_flag),
+        Box::new(ArithExpr::Mul(Box::new(not_glitched), Box::new(glitch))));
+
+    KernelSpec {
+        guard: ArithExpr::Cmp(CmpOp::Lt,
+            Box::new(ArithExpr::Var(0)),
+            Box::new(ArithExpr::Const(n_pixels as int))),
+        outputs: {
+            let d_re_out = Seq::new(n, |j: int| OutputSpec {
+                scatter: limb_scatter(n, j as nat),
+                compute: masked_d_re[j],
+            });
+            let d_im_out = Seq::new(n, |j: int| OutputSpec {
+                scatter: limb_scatter(n, j as nat),
+                compute: masked_d_im[j],
+            });
+            let meta_out = seq![
+                OutputSpec { scatter: ArithExpr::Var(0), compute: new_iter },
+                OutputSpec { scatter: ArithExpr::Var(0), compute: new_escaped },
+                OutputSpec { scatter: ArithExpr::Var(0), compute: new_glitched },
+            ];
+            d_re_out + d_im_out + meta_out
+        },
+    }
+}
+
 } //  verus!
