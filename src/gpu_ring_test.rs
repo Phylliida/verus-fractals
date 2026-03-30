@@ -104,11 +104,19 @@ impl<const N: usize, const F: usize> Ring for GpuFixedPoint<N, F> {
         }
     }
 
-    proof fn axiom_mul_commutative(a: Self, b: Self) {}
-    proof fn axiom_mul_associative(a: Self, b: Self, c: Self) {}
+    proof fn axiom_mul_commutative(a: Self, b: Self) {
+        assert(a.value * b.value == b.value * a.value) by (nonlinear_arith);
+    }
+    proof fn axiom_mul_associative(a: Self, b: Self, c: Self) {
+        assert((a.value * b.value) * c.value == a.value * (b.value * c.value))
+            by (nonlinear_arith);
+    }
     proof fn axiom_mul_one_right(a: Self) {}
     proof fn axiom_mul_zero_right(a: Self) {}
-    proof fn axiom_mul_distributes_left(a: Self, b: Self, c: Self) {}
+    proof fn axiom_mul_distributes_left(a: Self, b: Self, c: Self) {
+        assert(a.value * (b.value + c.value) == a.value * b.value + a.value * c.value)
+            by (nonlinear_arith);
+    }
     proof fn axiom_one_ne_zero() {}
     proof fn axiom_mul_congruence_left(a: Self, b: Self, c: Self) {}
 }
