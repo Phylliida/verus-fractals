@@ -1750,6 +1750,34 @@ pub open spec fn is_ring_expr(e: &ArithExpr) -> bool
     }
 }
 
+proof fn lemma_poly_eval_var(n: nat, env: Seq<int>)
+    ensures poly_eval(seq![(1int, seq![n])], env) ==
+        (if (n as int) < env.len() { env[n as int] } else { 0int }),
+{
+    let p = seq![(1int, seq![n])];
+    assert(p[0] == (1int, seq![n]));
+    assert(p[0].0 == 1int);
+    assert(p[0].1 =~= seq![n]);
+    assert(p.subrange(1, p.len() as int) =~= seq![]);
+    //  mono_eval(seq![n], env)
+    let vars = seq![n];
+    assert(vars[0] == n);
+    assert(vars.subrange(1, vars.len() as int) =~= Seq::<nat>::empty());
+    let v = if (n as int) < env.len() { env[n as int] } else { 0int };
+    assert(mono_eval(Seq::<nat>::empty(), env) == 1int) by {
+        reveal_with_fuel(mono_eval, 1);
+    };
+    assert(mono_eval(vars, env) == v * 1int) by {
+        reveal_with_fuel(mono_eval, 2);
+    };
+    assert(v * 1int == v) by(nonlinear_arith);
+    assert(poly_eval(seq![], env) == 0int) by { reveal_with_fuel(poly_eval, 1); };
+    assert(poly_eval(p, env) == 1int * mono_eval(vars, env) + poly_eval(seq![], env)) by {
+        reveal_with_fuel(poly_eval, 2);
+    };
+    assert(1int * mono_eval(vars, env) == mono_eval(vars, env)) by(nonlinear_arith);
+}
+
 proof fn lemma_poly_eval_arith(e: &ArithExpr, env: Seq<int>)
     requires is_ring_expr(e),
     ensures poly_eval(arith_to_poly(e), env) == arith_eval(e, env),
@@ -1759,8 +1787,15 @@ proof fn lemma_poly_eval_arith(e: &ArithExpr, env: Seq<int>)
     reveal_with_fuel(poly_eval, 2);
     reveal_with_fuel(mono_eval, 2);
     match e {
-        ArithExpr::Const(c) => {},
-        ArithExpr::Var(n) => {},
+        ArithExpr::Const(c) => {
+            //  arith_eval(Const(c), env) = c
+            //  arith_to_poly(Const(c)) = if c==0 { [] } else { [(c, [])] }
+            //  poly_eval([], env) = 0; poly_eval([(c,[])], env) = c * mono_eval([], env) + 0 = c * 1 = c
+            assert(poly_eval(arith_to_poly(e), env) == arith_eval(e, env));
+        },
+        ArithExpr::Var(n) => {
+            lemma_poly_eval_var(*n, env);
+        },
         ArithExpr::Add(a, b) => {
             lemma_poly_eval_arith(a, env);
             lemma_poly_eval_arith(b, env);
@@ -1806,6 +1841,155 @@ proof fn lemma_poly_eval_neg(p: Seq<(int, Seq<nat>)>, env: Seq<int>)
     assert(np.subrange(1, np.len() as int) =~= npt);
     assert((-p[0].0) * mono_eval(p[0].1, env) == -(p[0].0 * mono_eval(p[0].1, env)))
         by(nonlinear_arith);
+}
+
+    let pt = p.subrange(1, p.len() as int);
+    lemma_poly_neg_index(p, 0);
+    let np = poly_neg(p);
+    if p[0].1 =~= v {
+        assert(np[0].1 =~= v);
+        assert(poly_coeff(np, v) == np[0].0);
+        assert(np[0].0 == -p[0].0);
+    } else {
+        lemma_poly_neg_tail(p);
+        lemma_poly_neg_coeff(pt, v);
+        assert(!(np[0].1 =~= v));
+        assert(np.subrange(1, np.len() as int) =~= poly_neg(pt));
+    }
+}
+
+///  mono_eval with empty env: non-empty vars → 0.
+proof fn lemma_mono_eval_empty(vars: Seq<nat>)
+    requires vars.len() > 0,
+    ensures mono_eval(vars, Seq::<int>::empty()) == 0int,
+{
+    reveal_with_fuel(mono_eval, 2);
+}
+
+///  mono_eval with all-ones env of sufficient length: result is 1.
+proof fn lemma_mono_eval_ones(vars: Seq<nat>, env: Seq<int>)
+    requires
+        forall |i: int| 0 <= i < env.len() ==> env[i] == 1int,
+        forall |i: int| 0 <= i < vars.len() ==> (vars[i] as int) < env.len(),
+    ensures mono_eval(vars, env) == 1int,
+    decreases vars.len(),
+{
+    if vars.len() == 0 { return; }
+    lemma_mono_eval_ones(vars.subrange(1, vars.len() as int), env);
+}
+
+///  poly_eval at empty env: only constant terms (vars=[]) contribute.
+proof fn lemma_poly_eval_at_empty(p: Seq<(int, Seq<nat>)>)
+    requires poly_wf(p),
+    ensures
+        p.len() > 0 && p[0].1.len() == 0 ==> poly_eval(p, Seq::<int>::empty()) == p[0].0,
+        (p.len() == 0 || p[0].1.len() > 0) ==> poly_eval(p, Seq::<int>::empty()) == 0int,
+    decreases p.len(),
+{
+    let env = Seq::<int>::empty();
+    if p.len() == 0 { return; }
+    let pt = p.subrange(1, p.len() as int);
+    assert(poly_wf(pt)) by {
+        assert forall |i: int| 0 <= i < pt.len() implies pt[i].0 != 0int by { assert(pt[i] == p[i+1]); }
+        assert forall |i: int, j: int| 0 <= i < j < pt.len() implies vars_lt(pt[i].1, pt[j].1) by {
+            assert(pt[i] == p[i+1]); assert(pt[j] == p[j+1]);
+        }
+    }
+    if p[0].1.len() == 0 {
+        reveal_with_fuel(mono_eval, 1);
+        if pt.len() > 0 {
+            lemma_wf_tail_gt(p);
+            assert(pt[0].1.len() > 0) by { assert(vars_lt(p[0].1, pt[0].1)); }
+            lemma_poly_eval_at_empty(pt);
+        }
+    } else {
+        lemma_mono_eval_empty(p[0].1);
+        assert(p[0].0 * mono_eval(p[0].1, env) == 0int) by(nonlinear_arith)
+            requires mono_eval(p[0].1, env) == 0int;
+        if pt.len() > 0 {
+            lemma_wf_tail_gt(p);
+            assert(pt[0].1.len() > 0) by { assert(vars_lt(p[0].1, pt[0].1)); }
+            lemma_poly_eval_at_empty(pt);
+        }
+    }
+}
+
+///  A non-empty well-formed polynomial has a non-zero evaluation somewhere.
+proof fn lemma_wf_poly_nonzero_eval(p: Seq<(int, Seq<nat>)>)
+    requires poly_wf(p), p.len() > 0,
+    ensures exists |env: Seq<int>| poly_eval(p, env) != 0int,
+    decreases p.len(),
+{
+    //  Case 1: constant term (p[0].1 is empty)
+    if p[0].1.len() == 0 {
+        let env = Seq::<int>::empty();
+        lemma_poly_eval_at_empty(p);
+        assert(poly_eval(p, env) == p[0].0);
+        return;
+    }
+
+    //  Case 2: single non-constant term
+    if p.len() == 1 {
+        let max_idx = p[0].1[p[0].1.len() as int - 1];
+        let env = Seq::new((max_idx + 1) as nat, |_i: int| 1int);
+        assert forall |i: int| 0 <= i < p[0].1.len()
+            implies (p[0].1[i] as int) < env.len() by {}
+        lemma_mono_eval_ones(p[0].1, env);
+        reveal_with_fuel(poly_eval, 2);
+        assert(poly_eval(p, env) == p[0].0);
+        return;
+    }
+
+    //  Case 3: multi-term, no constant term
+    let pt = p.subrange(1, p.len() as int);
+    assert(poly_wf(pt)) by {
+        assert forall |i: int| 0 <= i < pt.len() implies pt[i].0 != 0int
+            by { assert(pt[i] == p[i+1]); }
+        assert forall |i: int, j: int| 0 <= i < j < pt.len()
+            implies vars_lt(pt[i].1, pt[j].1)
+            by { assert(pt[i] == p[i+1]); assert(pt[j] == p[j+1]); }
+    }
+    lemma_wf_poly_nonzero_eval(pt);
+    let env_ih: Seq<int> = choose |env: Seq<int>| poly_eval(pt, env) != 0int;
+    assert(poly_eval(p, env_ih) != 0int);
+}
+
+proof fn lemma_poly_identity(
+    p: Seq<(int, Seq<nat>)>,
+    q: Seq<(int, Seq<nat>)>,
+)
+    requires
+        poly_wf(p), poly_wf(q),
+        forall |env: Seq<int>| poly_eval(p, env) == poly_eval(q, env),
+    ensures p =~= q,
+{
+    lemma_poly_neg_wf(q);
+    let nq = poly_neg(q);
+    lemma_poly_add_wf(p, nq);
+    let d = poly_add(p, nq);
+
+    //  poly_eval(d, env) == 0 for all env
+    assert forall |env: Seq<int>| poly_eval(d, env) == 0int by {
+        lemma_poly_eval_add(p, nq, env);
+        lemma_poly_eval_neg(q, env);
+    };
+
+    //  d must be empty
+    if d.len() > 0 {
+        lemma_wf_poly_nonzero_eval(d);
+        let env_witness: Seq<int> = choose |env: Seq<int>| poly_eval(d, env) != 0int;
+        assert(poly_eval(d, env_witness) == 0int);
+        assert(false);
+    }
+
+    //  d =~= [], so poly_coeff(p, v) == poly_coeff(q, v) for all v
+    assert forall |v: Seq<nat>| poly_coeff(p, v) == poly_coeff(q, v) by {
+        lemma_poly_add_coeff_wf(p, nq, v);
+        lemma_poly_neg_coeff(q, v);
+        //  poly_coeff(d, v) == poly_coeff(p, v) + poly_coeff(nq, v)
+        //  = poly_coeff(p, v) - poly_coeff(q, v) == 0
+    };
+    lemma_poly_wf_eq_from_coeff(p, q);
 }
 
 } //  verus!
