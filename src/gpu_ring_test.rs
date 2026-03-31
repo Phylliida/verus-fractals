@@ -1078,6 +1078,194 @@ proof fn lemma_poly_add_inverse(p: Seq<(int, Seq<nat>)>)
 }
 
 //  ══════════════════════════════════════════════════════════════
+//  poly_insert / mono_mul_poly / poly_mul preserve well-formedness
+//  ══════════════════════════════════════════════════════════════
+
+///  poly_insert preserves poly_wf (when inserting into a poly where all vars > some bound,
+///  and v is also > that bound, the result stays well-formed).
+///  Simpler statement: poly_insert into a wf poly gives wf result.
+proof fn lemma_poly_insert_wf(c: int, v: Seq<nat>, p: Seq<(int, Seq<nat>)>)
+    requires poly_wf(p),
+    ensures poly_wf(poly_insert(c, v, p)),
+    decreases p.len(),
+{
+    if c == 0int { return; }
+    if p.len() == 0 {
+        let r = seq![(c, v)];
+        assert forall |i: int| 0 <= i < r.len() implies r[i].0 != 0int by {}
+        assert forall |i: int, j: int| 0 <= i < j < r.len()
+            implies vars_lt(r[i].1, r[j].1) by {}
+        return;
+    }
+    let pt = p.subrange(1, p.len() as int);
+    assert(poly_wf(pt)) by {
+        assert forall |i: int| 0 <= i < pt.len() implies pt[i].0 != 0int by { assert(pt[i] == p[i+1]); }
+        assert forall |i: int, j: int| 0 <= i < j < pt.len() implies vars_lt(pt[i].1, pt[j].1) by {
+            assert(pt[i] == p[i+1]); assert(pt[j] == p[j+1]);
+        }
+    }
+    if v =~= p[0].1 {
+        let nc = c + p[0].0;
+        if nc == 0int {
+            //  Result is pt, which is wf
+        } else {
+            //  Result is [(nc, v)] + pt
+            let r = seq![(nc, v)] + pt;
+            lemma_wf_tail_gt(p);
+            assert forall |i: int| 0 <= i < r.len() implies r[i].0 != 0int by {
+                if i == 0 {} else { assert(r[i] == pt[i-1]); }
+            }
+            assert forall |i: int, j: int| 0 <= i < j < r.len()
+                implies vars_lt(r[i].1, r[j].1) by {
+                if i == 0 {
+                    assert(r[0].1 =~= v);
+                    assert(v =~= p[0].1);
+                    assert(r[j] == pt[j-1]);
+                    assert(vars_lt(p[0].1, pt[j-1].1));
+                } else {
+                    assert(r[i] == pt[i-1]);
+                    assert(r[j] == pt[j-1]);
+                }
+            }
+        }
+    } else if vars_lt(v, p[0].1) {
+        //  Result is [(c, v)] + p
+        let r = seq![(c, v)] + p;
+        assert forall |i: int| 0 <= i < r.len() implies r[i].0 != 0int by {
+            if i == 0 {} else { assert(r[i] == p[i-1]); }
+        }
+        assert forall |i: int, j: int| 0 <= i < j < r.len()
+            implies vars_lt(r[i].1, r[j].1) by {
+            if i == 0 && j == 1 {
+                assert(r[0].1 =~= v);
+                assert(r[1] == p[0]);
+            } else if i == 0 {
+                assert(r[j] == p[j-1]);
+                lemma_vars_lt_trans(v, p[0].1, p[j-1].1);
+            } else {
+                assert(r[i] == p[i-1]);
+                assert(r[j] == p[j-1]);
+            }
+        }
+    } else {
+        //  Result is [p[0]] + poly_insert(c, v, pt)
+        lemma_vars_lt_trichotomy(v, p[0].1);
+        lemma_poly_insert_wf(c, v, pt);
+        let ins = poly_insert(c, v, pt);
+        let r = seq![p[0]] + ins;
+        assert forall |i: int| 0 <= i < r.len() implies r[i].0 != 0int by {
+            if i == 0 {} else { assert(r[i] == ins[i-1]); }
+        }
+        //  Need: p[0].1 < first element of ins (if ins non-empty)
+        //  This requires knowing poly_insert preserves "all > p[0].1" property
+        //  Since pt has all vars > p[0].1, and v > p[0].1, poly_insert(c, v, pt) also has all vars > p[0].1
+        lemma_wf_tail_gt(p);
+        lemma_poly_insert_gt(c, v, pt, p[0].1);
+        assert forall |i: int, j: int| 0 <= i < j < r.len()
+            implies vars_lt(r[i].1, r[j].1) by {
+            if i == 0 {
+                assert(r[j] == ins[j-1]);
+            } else {
+                assert(r[i] == ins[i-1]);
+                assert(r[j] == ins[j-1]);
+            }
+        }
+    }
+}
+
+///  poly_insert preserves poly_gt.
+proof fn lemma_poly_insert_gt(c: int, v: Seq<nat>, p: Seq<(int, Seq<nat>)>, w: Seq<nat>)
+    requires poly_gt(p, w), vars_lt(w, v),
+    ensures poly_gt(poly_insert(c, v, p), w),
+    decreases p.len(),
+{
+    if c == 0int { return; }
+    if p.len() == 0 { return; }
+    if v =~= p[0].1 {
+        let nc = c + p[0].0;
+        if nc == 0int {
+            //  Result is p_tail, which has poly_gt(_, w)
+            let pt = p.subrange(1, p.len() as int);
+            assert forall |i: int| 0 <= i < pt.len() implies vars_lt(w, pt[i].1) by {
+                assert(pt[i] == p[i+1]);
+            }
+        } else {
+            let pt = p.subrange(1, p.len() as int);
+            let r = seq![(nc, v)] + pt;
+            assert(vars_lt(w, r[0].1));
+            assert forall |i: int| 0 <= i < r.len() implies vars_lt(w, r[i].1) by {
+                if i == 0 {} else { assert(r[i] == pt[i-1]); assert(pt[i-1] == p[i]); }
+            }
+        }
+    } else if vars_lt(v, p[0].1) {
+        let r = seq![(c, v)] + p;
+        assert forall |i: int| 0 <= i < r.len() implies vars_lt(w, r[i].1) by {
+            if i == 0 {} else { assert(r[i] == p[i-1]); }
+        }
+    } else {
+        let pt = p.subrange(1, p.len() as int);
+        assert(poly_gt(pt, w)) by {
+            assert forall |i: int| 0 <= i < pt.len() implies vars_lt(w, pt[i].1) by {
+                assert(pt[i] == p[i+1]);
+            }
+        }
+        lemma_poly_insert_gt(c, v, pt, w);
+        let ins = poly_insert(c, v, pt);
+        let r = seq![p[0]] + ins;
+        assert forall |i: int| 0 <= i < r.len() implies vars_lt(w, r[i].1) by {
+            if i == 0 {} else { assert(r[i] == ins[i-1]); }
+        }
+    }
+}
+
+///  mono_mul_poly preserves poly_wf.
+proof fn lemma_mono_mul_poly_wf(c: int, vars: Seq<nat>, q: Seq<(int, Seq<nat>)>)
+    requires poly_wf(q), c != 0int,
+    ensures poly_wf(mono_mul_poly(c, vars, q)),
+    decreases q.len(),
+{
+    if q.len() == 0 { return; }
+    let qt = q.subrange(1, q.len() as int);
+    assert(poly_wf(qt)) by {
+        assert forall |i: int| 0 <= i < qt.len() implies qt[i].0 != 0int by { assert(qt[i] == q[i+1]); }
+        assert forall |i: int, j: int| 0 <= i < j < qt.len() implies vars_lt(qt[i].1, qt[j].1) by {
+            assert(qt[i] == q[i+1]); assert(qt[j] == q[j+1]);
+        }
+    }
+    lemma_mono_mul_poly_wf(c, vars, qt);
+    let nc = c * q[0].0;
+    //  c != 0 and q[0].0 != 0 → c * q[0].0 != 0 (integers: zero product property)
+    if nc == 0int {
+        assert(c * q[0].0 == 0int);
+        //  For integers: a*b == 0 implies a == 0 or b == 0
+        assert(c == 0int || q[0].0 == 0int) by(nonlinear_arith)
+            requires c * q[0].0 == 0int;
+    }
+    let nv = vars_merge(vars, q[0].1);
+    let rest = mono_mul_poly(c, vars, qt);
+    lemma_poly_insert_wf(nc, nv, rest);
+}
+
+///  poly_mul preserves poly_wf.
+proof fn lemma_poly_mul_wf(p: Seq<(int, Seq<nat>)>, q: Seq<(int, Seq<nat>)>)
+    requires poly_wf(p), poly_wf(q),
+    ensures poly_wf(poly_mul(p, q)),
+    decreases p.len(),
+{
+    if p.len() == 0 { return; }
+    let pt = p.subrange(1, p.len() as int);
+    assert(poly_wf(pt)) by {
+        assert forall |i: int| 0 <= i < pt.len() implies pt[i].0 != 0int by { assert(pt[i] == p[i+1]); }
+        assert forall |i: int, j: int| 0 <= i < j < pt.len() implies vars_lt(pt[i].1, pt[j].1) by {
+            assert(pt[i] == p[i+1]); assert(pt[j] == p[j+1]);
+        }
+    }
+    lemma_mono_mul_poly_wf(p[0].0, p[0].1, q);
+    lemma_poly_mul_wf(pt, q);
+    lemma_poly_add_wf(mono_mul_poly(p[0].0, p[0].1, q), poly_mul(pt, q));
+}
+
+//  ══════════════════════════════════════════════════════════════
 //  arith_to_poly produces well-formed output
 //  ══════════════════════════════════════════════════════════════
 
@@ -1161,6 +1349,7 @@ impl<const N: usize, const F: usize> AdditiveCommutativeMonoid for GpuFixedPoint
     }
 
     proof fn axiom_add_associative(a: Self, b: Self, c: Self) {
+        reveal_with_fuel(arith_to_poly, 2);
         lemma_arith_to_poly_wf(&a.expr);
         lemma_arith_to_poly_wf(&b.expr);
         lemma_arith_to_poly_wf(&c.expr);
@@ -1172,7 +1361,7 @@ impl<const N: usize, const F: usize> AdditiveCommutativeMonoid for GpuFixedPoint
     }
 
     proof fn axiom_add_zero_right(a: Self) {
-        //  arith_to_poly(Const(0)) = [], poly_add(pa, []) = pa
+        reveal_with_fuel(arith_to_poly, 2);
     }
 
     proof fn axiom_add_congruence_left(a: Self, b: Self, c: Self) {}
@@ -1192,14 +1381,13 @@ impl<const N: usize, const F: usize> AdditiveGroup for GpuFixedPoint<N, F> {
     }
 
     proof fn axiom_add_inverse_right(a: Self) {
+        reveal_with_fuel(arith_to_poly, 3);
         let pa = arith_to_poly(&a.expr);
         lemma_poly_add_inverse(pa);
     }
 
     proof fn axiom_sub_is_add_neg(a: Self, b: Self) {
-        //  sub(a,b) = Sub(a, b) → poly_add(pa, poly_neg(pb))
-        //  add(a, neg(b)) = Add(a, Sub(0, b)) → poly_add(pa, poly_add([], poly_neg(pb)))
-        //                                      = poly_add(pa, poly_neg(pb))  ✓
+        reveal_with_fuel(arith_to_poly, 3);
     }
 
     proof fn axiom_neg_congruence(a: Self, b: Self) {}
@@ -1215,12 +1403,132 @@ impl<const N: usize, const F: usize> GpuFixedPoint<N, F> {
 //  Well-formedness preservation: neg, insert, mono_mul, mul
 //  ══════════════════════════════════════════════════════════════
 
+///  poly_neg preserves elements: poly_neg(p)[i] == (-p[i].0, p[i].1).
+proof fn lemma_poly_neg_index(p: Seq<(int, Seq<nat>)>, i: int)
+    requires 0 <= i < p.len(),
+    ensures poly_neg(p)[i] == (-p[i].0, p[i].1),
+    decreases p.len(),
+{
+    lemma_poly_neg_len(p);
+    if i == 0 {
+    } else {
+        let pt = p.subrange(1, p.len() as int);
+        lemma_poly_neg_index(pt, i - 1);
+        assert(pt[i - 1] == p[i]);
+        let np = poly_neg(p);
+        let npt = poly_neg(pt);
+        assert(np =~= seq![(-p[0].0, p[0].1)] + npt);
+        assert(np[i] == npt[i - 1]);
+    }
+}
+
 proof fn lemma_poly_neg_wf(p: Seq<(int, Seq<nat>)>)
     requires poly_wf(p),
     ensures poly_wf(poly_neg(p)),
+{
+    lemma_poly_neg_len(p);
+    let np = poly_neg(p);
+    assert forall |i: int| 0 <= i < np.len() implies np[i].0 != 0int by {
+        lemma_poly_neg_index(p, i);
+    }
+    assert forall |i: int, j: int| 0 <= i < j < np.len()
+        implies vars_lt(np[i].1, np[j].1) by {
+        lemma_poly_neg_index(p, i);
+        lemma_poly_neg_index(p, j);
+        assert(np[i].1 =~= p[i].1);
+        assert(np[j].1 =~= p[j].1);
+    }
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  Evaluation bridge: poly_eval connects polynomials to integers
+//  ══════════════════════════════════════════════════════════════
+
+///  Evaluate a monomial: product of env[vars[i]] for each variable.
+pub open spec fn mono_eval(vars: Seq<nat>, env: Seq<int>) -> int
+    decreases vars.len(),
+{
+    if vars.len() == 0 { 1int }
+    else {
+        let v = if (vars[0] as int) < env.len() { env[vars[0] as int] } else { 0int };
+        v * mono_eval(vars.subrange(1, vars.len() as int), env)
+    }
+}
+
+///  Evaluate a polynomial: sum of coeff * mono_eval(vars, env).
+pub open spec fn poly_eval(p: Seq<(int, Seq<nat>)>, env: Seq<int>) -> int
     decreases p.len(),
 {
-    if p.len() == 0 { return; }
+    if p.len() == 0 { 0int }
+    else { p[0].0 * mono_eval(p[0].1, env) + poly_eval(p.subrange(1, p.len() as int), env) }
+}
+
+///  Standalone test: does the base case of mono_eval_merge work?
+proof fn test_mono_merge_base(a: Seq<nat>, b: Seq<nat>, env: Seq<int>)
+    requires a.len() == 0,
+    ensures mono_eval(vars_merge(a, b), env) == mono_eval(a, env) * mono_eval(b, env),
+{}
+
+///  mono_eval(merge(a,b), env) == mono_eval(a, env) * mono_eval(b, env).
+proof fn lemma_mono_eval_merge(a: Seq<nat>, b: Seq<nat>, env: Seq<int>)
+    ensures mono_eval(vars_merge(a, b), env) == mono_eval(a, env) * mono_eval(b, env),
+    decreases a.len() + b.len(),
+{
+    if a.len() == 0 {
+        test_mono_merge_base(a, b, env);
+    } else if b.len() == 0 {
+        // vars_merge(a, []) = a (second branch), mono_eval([], env) = 1
+        assert(vars_merge(a, b) =~= a) by { reveal_with_fuel(vars_merge, 2); }
+        assert(mono_eval(b, env) == 1int) by { reveal_with_fuel(mono_eval, 2); }
+    } else if a[0] <= b[0] {
+        let at = a.subrange(1, a.len() as int);
+        lemma_mono_eval_merge(at, b, env);
+        let va = if (a[0] as int) < env.len() { env[a[0] as int] } else { 0int };
+        let m = vars_merge(a, b);
+        assert(m =~= seq![a[0]] + vars_merge(at, b));
+        assert(m.subrange(1, m.len() as int) =~= vars_merge(at, b));
+        //  Explicitly tell Z3 what mono_eval of the merge is
+        assert(mono_eval(m, env) == va * mono_eval(vars_merge(at, b), env));
+        assert(mono_eval(a, env) == va * mono_eval(at, env));
+        assert(mono_eval(vars_merge(at, b), env) == mono_eval(at, env) * mono_eval(b, env));
+        assert(va * mono_eval(at, env) * mono_eval(b, env)
+            == va * (mono_eval(at, env) * mono_eval(b, env))) by(nonlinear_arith);
+    } else {
+        let bt = b.subrange(1, b.len() as int);
+        lemma_mono_eval_merge(a, bt, env);
+        let vb = if (b[0] as int) < env.len() { env[b[0] as int] } else { 0int };
+        let m = vars_merge(a, b);
+        assert(m =~= seq![b[0]] + vars_merge(a, bt));
+        assert(m.subrange(1, m.len() as int) =~= vars_merge(a, bt));
+        //  Explicitly tell Z3 what mono_eval of the merge is
+        assert(mono_eval(m, env) == vb * mono_eval(vars_merge(a, bt), env));
+        assert(mono_eval(b, env) == vb * mono_eval(bt, env));
+        assert(mono_eval(vars_merge(a, bt), env) == mono_eval(a, env) * mono_eval(bt, env));
+        assert(vb * (mono_eval(a, env) * mono_eval(bt, env))
+            == mono_eval(a, env) * (vb * mono_eval(bt, env))) by(nonlinear_arith);
+    }
+}
+
+///  poly_eval(poly_insert(c, v, p), env) == c * mono_eval(v, env) + poly_eval(p, env)
+///  for well-formed p.
+proof fn lemma_poly_eval_insert(c: int, v: Seq<nat>, p: Seq<(int, Seq<nat>)>, env: Seq<int>)
+    requires poly_wf(p),
+    ensures poly_eval(poly_insert(c, v, p), env) == c * mono_eval(v, env) + poly_eval(p, env),
+    decreases p.len(),
+{
+    if c == 0int {
+        //  poly_insert = p, c * mono_eval = 0
+        return;
+    }
+    if p.len() == 0 {
+        //  poly_insert(c, v, []) = [(c, v)]
+        //  poly_insert(c, v, []) = [(c, v)] since c != 0
+        //  poly_eval([(c,v)], env) = c * mono_eval(v, env) + 0 = c * mono_eval(v, env)
+        //  poly_eval([], env) = 0
+        //  So postcondition: c * mono_eval(v, env) + 0 == c * mono_eval(v, env) + 0 ✓
+        reveal_with_fuel(poly_eval, 2);
+        return;
+    }
     let pt = p.subrange(1, p.len() as int);
     assert(poly_wf(pt)) by {
         assert forall |i: int| 0 <= i < pt.len() implies pt[i].0 != 0int by { assert(pt[i] == p[i+1]); }
@@ -1228,42 +1536,276 @@ proof fn lemma_poly_neg_wf(p: Seq<(int, Seq<nat>)>)
             assert(pt[i] == p[i+1]); assert(pt[j] == p[j+1]);
         }
     }
-    lemma_poly_neg_wf(pt);
-    let np = poly_neg(p);
+    if v =~= p[0].1 {
+        let nc = c + p[0].0;
+        if nc == 0int {
+            //  poly_insert = pt
+            //  poly_eval(pt) = poly_eval(p) - p[0].0 * mono_eval(p[0].1, env)
+            //  c * mono_eval(v) + poly_eval(p) = c * mono_eval(v) + p[0].0 * mono_eval(v) + poly_eval(pt)
+            //  = (c + p[0].0) * mono_eval(v) + poly_eval(pt) = 0 + poly_eval(pt) ✓
+            assert(c * mono_eval(v, env) + poly_eval(p, env)
+                == (c + p[0].0) * mono_eval(v, env) + poly_eval(pt, env))
+                by(nonlinear_arith)
+                requires poly_eval(p, env) == p[0].0 * mono_eval(p[0].1, env) + poly_eval(pt, env),
+                    v =~= p[0].1;
+        } else {
+            //  poly_insert = [(nc, v)] + pt
+            let r = seq![(nc, v)] + pt;
+            assert(r.subrange(1, r.len() as int) =~= pt);
+            assert(poly_eval(r, env) == nc * mono_eval(v, env) + poly_eval(pt, env));
+            assert(nc * mono_eval(v, env) == (c + p[0].0) * mono_eval(v, env))
+                by(nonlinear_arith) requires nc == c + p[0].0;
+            assert((c + p[0].0) * mono_eval(v, env) + poly_eval(pt, env)
+                == c * mono_eval(v, env) + p[0].0 * mono_eval(v, env) + poly_eval(pt, env))
+                by(nonlinear_arith);
+        }
+    } else if vars_lt(v, p[0].1) {
+        //  poly_insert = [(c, v)] + p
+        let r = seq![(c, v)] + p;
+        assert(r.subrange(1, r.len() as int) =~= p);
+    } else {
+        //  poly_insert = [p[0]] + poly_insert(c, v, pt)
+        lemma_poly_eval_insert(c, v, pt, env);
+        let ins = poly_insert(c, v, pt);
+        let r = seq![p[0]] + ins;
+        assert(r.subrange(1, r.len() as int) =~= ins);
+        assert(poly_eval(r, env) == p[0].0 * mono_eval(p[0].1, env) + poly_eval(ins, env));
+        assert(poly_eval(ins, env) == c * mono_eval(v, env) + poly_eval(pt, env));
+    }
+}
+
+///  poly_eval(mono_mul_poly(c, vars, q), env) == c * mono_eval(vars, env) * poly_eval(q, env).
+proof fn lemma_poly_eval_mono_mul(
+    c: int, vars: Seq<nat>, q: Seq<(int, Seq<nat>)>, env: Seq<int>,
+)
+    requires poly_wf(q), c != 0int,
+    ensures poly_eval(mono_mul_poly(c, vars, q), env) == c * mono_eval(vars, env) * poly_eval(q, env),
+    decreases q.len(),
+{
+    if q.len() == 0 {
+        assert(poly_eval(seq![], env) == 0int);
+        assert(poly_eval(q, env) == 0int);
+        assert(c * mono_eval(vars, env) * 0int == 0int) by(nonlinear_arith);
+        return;
+    }
+    let qt = q.subrange(1, q.len() as int);
+    assert(poly_wf(qt)) by {
+        assert forall |i: int| 0 <= i < qt.len() implies qt[i].0 != 0int by { assert(qt[i] == q[i+1]); }
+        assert forall |i: int, j: int| 0 <= i < j < qt.len() implies vars_lt(qt[i].1, qt[j].1) by {
+            assert(qt[i] == q[i+1]); assert(qt[j] == q[j+1]);
+        }
+    }
+    let nc = c * q[0].0;
+    let nv = vars_merge(vars, q[0].1);
+    let rest = mono_mul_poly(c, vars, qt);
+
+    lemma_poly_eval_mono_mul(c, vars, qt, env);
+    lemma_mono_mul_poly_wf(c, vars, qt);
+    lemma_poly_eval_insert(nc, nv, rest, env);
+    lemma_mono_eval_merge(vars, q[0].1, env);
+
+    //  poly_eval(poly_insert(nc, nv, rest), env) = nc * mono_eval(nv, env) + poly_eval(rest, env)
+    //  = c * q[0].0 * mono_eval(vars, env) * mono_eval(q[0].1, env)
+    //    + c * mono_eval(vars, env) * poly_eval(qt, env)
+    //  = c * mono_eval(vars, env) * (q[0].0 * mono_eval(q[0].1, env) + poly_eval(qt, env))
+    //  = c * mono_eval(vars, env) * poly_eval(q, env)
+
+    //  Chain the algebra: poly_eval(result) = nc*mono(nv) + poly_eval(rest)
+    //  = c*q0*mono(vars)*mono(q0_vars) + c*mono(vars)*poly_eval(qt)
+    //  = c*mono(vars) * (q0*mono(q0_vars) + poly_eval(qt))
+    //  = c*mono(vars) * poly_eval(q)
+    assert(nc * mono_eval(nv, env) == c * q[0].0 * mono_eval(vars, env) * mono_eval(q[0].1, env))
+        by(nonlinear_arith)
+        requires nc == c * q[0].0,
+            mono_eval(nv, env) == mono_eval(vars, env) * mono_eval(q[0].1, env);
+    assert(c * q[0].0 * mono_eval(vars, env) * mono_eval(q[0].1, env)
+        + c * mono_eval(vars, env) * poly_eval(qt, env)
+        == c * mono_eval(vars, env) * (q[0].0 * mono_eval(q[0].1, env) + poly_eval(qt, env)))
+        by(nonlinear_arith);
+    assert(c * mono_eval(vars, env) * poly_eval(q, env)
+        == c * mono_eval(vars, env) * (q[0].0 * mono_eval(q[0].1, env) + poly_eval(qt, env)))
+        by(nonlinear_arith)
+        requires poly_eval(q, env) == q[0].0 * mono_eval(q[0].1, env) + poly_eval(qt, env);
+    assert(c * mono_eval(vars, env) * (q[0].0 * mono_eval(q[0].1, env) + poly_eval(qt, env))
+        == c * q[0].0 * mono_eval(vars, env) * mono_eval(q[0].1, env) + c * mono_eval(vars, env) * poly_eval(qt, env))
+        by(nonlinear_arith);
+}
+
+///  poly_eval(poly_mul(p, q), env) == poly_eval(p, env) * poly_eval(q, env).
+proof fn lemma_poly_eval_mul(
+    p: Seq<(int, Seq<nat>)>, q: Seq<(int, Seq<nat>)>, env: Seq<int>,
+)
+    requires poly_wf(p), poly_wf(q),
+    ensures poly_eval(poly_mul(p, q), env) == poly_eval(p, env) * poly_eval(q, env),
+    decreases p.len(),
+{
+    if p.len() == 0 {
+        assert(poly_eval(p, env) == 0int);
+        return;
+    }
+    let pt = p.subrange(1, p.len() as int);
+    assert(poly_wf(pt)) by {
+        assert forall |i: int| 0 <= i < pt.len() implies pt[i].0 != 0int by { assert(pt[i] == p[i+1]); }
+        assert forall |i: int, j: int| 0 <= i < j < pt.len() implies vars_lt(pt[i].1, pt[j].1) by {
+            assert(pt[i] == p[i+1]); assert(pt[j] == p[j+1]);
+        }
+    }
+    lemma_poly_eval_mono_mul(p[0].0, p[0].1, q, env);
+    lemma_poly_eval_mul(pt, q, env);
+    lemma_mono_mul_poly_wf(p[0].0, p[0].1, q);
+    lemma_poly_mul_wf(pt, q);
+
+    let mmp = mono_mul_poly(p[0].0, p[0].1, q);
+    let pmul = poly_mul(pt, q);
+
+    //  poly_mul(p, q) = poly_add(mmp, pmul)
+    //  Need: poly_eval(poly_add(mmp, pmul), env) = poly_eval(mmp, env) + poly_eval(pmul, env)
+    lemma_poly_eval_add(mmp, pmul, env);
+
+    //  poly_eval(mmp, env) = p[0].0 * mono_eval(p[0].1, env) * poly_eval(q, env)
+    //  poly_eval(pmul, env) = poly_eval(pt, env) * poly_eval(q, env)
+    //  Sum = (p[0].0 * mono_eval(p[0].1, env) + poly_eval(pt, env)) * poly_eval(q, env)
+    //      = poly_eval(p, env) * poly_eval(q, env)
+    assert((p[0].0 * mono_eval(p[0].1, env) + poly_eval(pt, env)) * poly_eval(q, env)
+        == p[0].0 * mono_eval(p[0].1, env) * poly_eval(q, env) + poly_eval(pt, env) * poly_eval(q, env))
+        by(nonlinear_arith);
+}
+
+///  poly_eval(poly_add(p, q), env) == poly_eval(p, env) + poly_eval(q, env).
+proof fn lemma_poly_eval_add(
+    p: Seq<(int, Seq<nat>)>, q: Seq<(int, Seq<nat>)>, env: Seq<int>,
+)
+    requires poly_wf(p), poly_wf(q),
+    ensures poly_eval(poly_add(p, q), env) == poly_eval(p, env) + poly_eval(q, env),
+    decreases p.len() + q.len(),
+{
+    if p.len() == 0 { return; }
+    if q.len() == 0 { return; }
+    let pt = p.subrange(1, p.len() as int);
+    let qt = q.subrange(1, q.len() as int);
+    assert(poly_wf(pt)) by {
+        assert forall |i: int| 0 <= i < pt.len() implies pt[i].0 != 0int by { assert(pt[i] == p[i+1]); }
+        assert forall |i: int, j: int| 0 <= i < j < pt.len() implies vars_lt(pt[i].1, pt[j].1) by {
+            assert(pt[i] == p[i+1]); assert(pt[j] == p[j+1]);
+        }
+    }
+    assert(poly_wf(qt)) by {
+        assert forall |i: int| 0 <= i < qt.len() implies qt[i].0 != 0int by { assert(qt[i] == q[i+1]); }
+        assert forall |i: int, j: int| 0 <= i < j < qt.len() implies vars_lt(qt[i].1, qt[j].1) by {
+            assert(qt[i] == q[i+1]); assert(qt[j] == q[j+1]);
+        }
+    }
+    if p[0].1 =~= q[0].1 {
+        lemma_poly_eval_add(pt, qt, env);
+        let c = p[0].0 + q[0].0;
+        if c == 0int {
+            //  poly_add(p, q) = poly_add(pt, qt)
+            assert((p[0].0 + q[0].0) * mono_eval(p[0].1, env) == 0int) by(nonlinear_arith)
+                requires p[0].0 + q[0].0 == 0int;
+            //  poly_eval(p) = p0*m + eval(pt), poly_eval(q) = q0*m' + eval(qt)
+            //  where m = m' since p[0].1 =~= q[0].1
+            //  sum = (p0+q0)*m + eval(pt) + eval(qt) = eval(pt) + eval(qt)
+            //  poly_eval(poly_add(pt,qt)) = eval(pt) + eval(qt) [IH]
+            assert(poly_eval(p, env) == p[0].0 * mono_eval(p[0].1, env) + poly_eval(pt, env));
+            assert(poly_eval(q, env) == q[0].0 * mono_eval(q[0].1, env) + poly_eval(qt, env));
+            //  Since p[0].1 =~= q[0].1, mono_eval gives same value
+            assert(mono_eval(q[0].1, env) == mono_eval(p[0].1, env));
+            //  So: sum = (p0+q0)*m + eval(pt) + eval(qt) = 0 + eval(pt) + eval(qt)
+            assert(p[0].0 * mono_eval(p[0].1, env) + q[0].0 * mono_eval(p[0].1, env) == 0int)
+                by(nonlinear_arith)
+                requires p[0].0 + q[0].0 == 0int;
+        } else {
+            //  poly_add(p, q) = [(c, v)] + poly_add(pt, qt)
+            let r = seq![(c, p[0].1)] + poly_add(pt, qt);
+            assert(poly_add(p, q) =~= r);
+            assert(r.subrange(1, r.len() as int) =~= poly_add(pt, qt));
+            assert(c * mono_eval(p[0].1, env) == (p[0].0 + q[0].0) * mono_eval(p[0].1, env))
+                by(nonlinear_arith) requires c == p[0].0 + q[0].0;
+            assert((p[0].0 + q[0].0) * mono_eval(p[0].1, env) == p[0].0 * mono_eval(p[0].1, env) + q[0].0 * mono_eval(p[0].1, env))
+                by(nonlinear_arith);
+        }
+    } else if vars_lt(p[0].1, q[0].1) {
+        lemma_poly_eval_add(pt, q, env);
+        lemma_vars_lt_asymm(p[0].1, q[0].1);
+        let r = seq![p[0]] + poly_add(pt, q);
+        assert(r.subrange(1, r.len() as int) =~= poly_add(pt, q));
+    } else {
+        lemma_vars_lt_trichotomy(p[0].1, q[0].1);
+        lemma_poly_eval_add(p, qt, env);
+        let r = seq![q[0]] + poly_add(p, qt);
+        assert(r.subrange(1, r.len() as int) =~= poly_add(p, qt));
+    }
+}
+
+///  poly_eval(arith_to_poly(e), env) == arith_eval(e, env).
+///  An ArithExpr is a "ring expression" if it only uses Const/Var/Add/Sub/Mul.
+pub open spec fn is_ring_expr(e: &ArithExpr) -> bool
+    decreases e,
+{
+    match e {
+        ArithExpr::Const(_) | ArithExpr::Var(_) => true,
+        ArithExpr::Add(a, b) | ArithExpr::Sub(a, b) | ArithExpr::Mul(a, b) =>
+            is_ring_expr(a) && is_ring_expr(b),
+        _ => false,
+    }
+}
+
+proof fn lemma_poly_eval_arith(e: &ArithExpr, env: Seq<int>)
+    requires is_ring_expr(e),
+    ensures poly_eval(arith_to_poly(e), env) == arith_eval(e, env),
+    decreases e,
+{
+    reveal_with_fuel(arith_eval, 2);
+    reveal_with_fuel(poly_eval, 2);
+    reveal_with_fuel(mono_eval, 2);
+    match e {
+        ArithExpr::Const(c) => {},
+        ArithExpr::Var(n) => {},
+        ArithExpr::Add(a, b) => {
+            lemma_poly_eval_arith(a, env);
+            lemma_poly_eval_arith(b, env);
+            lemma_arith_to_poly_wf(a);
+            lemma_arith_to_poly_wf(b);
+            lemma_poly_eval_add(arith_to_poly(a), arith_to_poly(b), env);
+        },
+        ArithExpr::Sub(a, b) => {
+            lemma_poly_eval_arith(a, env);
+            lemma_poly_eval_arith(b, env);
+            lemma_arith_to_poly_wf(a);
+            lemma_arith_to_poly_wf(b);
+            lemma_poly_neg_wf(arith_to_poly(b));
+            lemma_poly_eval_neg(arith_to_poly(b), env);
+            lemma_poly_eval_add(arith_to_poly(a), poly_neg(arith_to_poly(b)), env);
+        },
+        ArithExpr::Mul(a, b) => {
+            lemma_poly_eval_arith(a, env);
+            lemma_poly_eval_arith(b, env);
+            lemma_arith_to_poly_wf(a);
+            lemma_arith_to_poly_wf(b);
+            lemma_poly_eval_mul(arith_to_poly(a), arith_to_poly(b), env);
+        },
+        _ => {
+            //  Unreachable by is_ring_expr precondition
+            assert(!is_ring_expr(e));
+        },
+    }
+}
+
+///  poly_eval(poly_neg(p), env) == -poly_eval(p, env).
+proof fn lemma_poly_eval_neg(p: Seq<(int, Seq<nat>)>, env: Seq<int>)
+    ensures poly_eval(poly_neg(p), env) == -poly_eval(p, env),
+    decreases p.len(),
+{
+    if p.len() == 0 { return; }
+    let pt = p.subrange(1, p.len() as int);
+    lemma_poly_eval_neg(pt, env);
     lemma_poly_neg_len(p);
-    //  Show: np[i] = (-p[i].0, p[i].1) for all i
-    //  np = [(-p[0].0, p[0].1)] + poly_neg(pt)
+    let np = poly_neg(p);
     let npt = poly_neg(pt);
-    assert forall |i: int| 0 <= i < np.len() implies np[i].0 != 0int by {
-        if i == 0 {
-            assert(np[0] == (-p[0].0, p[0].1));
-        } else {
-            assert(np =~= seq![(-p[0].0, p[0].1)] + npt);
-            assert(np[i] == npt[i - 1]);
-        }
-    }
-    assert forall |i: int, j: int| 0 <= i < j < np.len()
-        implies vars_lt(np[i].1, np[j].1) by {
-        //  np[i].1 = p[i].1 (negation preserves vars)
-        if i == 0 {
-            assert(np[i].1 =~= p[0].1);
-        } else {
-            assert(np =~= seq![(-p[0].0, p[0].1)] + npt);
-            assert(np[i].1 =~= npt[i-1].1);
-            lemma_poly_neg_len(pt);
-            assert(npt[i-1].1 =~= pt[i-1].1);
-            assert(pt[i-1] == p[i]);
-        }
-        if j == 0 {} else {
-            assert(np =~= seq![(-p[0].0, p[0].1)] + npt);
-            assert(np[j].1 =~= npt[j-1].1);
-            lemma_poly_neg_len(pt);
-            assert(npt[j-1].1 =~= pt[j-1].1);
-            assert(pt[j-1] == p[j]);
-        }
-        assert(np[i].1 =~= p[i].1);
-        assert(np[j].1 =~= p[j].1);
-    }
+    assert(np =~= seq![(-p[0].0, p[0].1)] + npt);
+    assert(np.subrange(1, np.len() as int) =~= npt);
+    assert((-p[0].0) * mono_eval(p[0].1, env) == -(p[0].0 * mono_eval(p[0].1, env)))
+        by(nonlinear_arith);
 }
 
 } //  verus!
