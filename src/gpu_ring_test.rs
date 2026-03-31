@@ -14,19 +14,22 @@ verus! {
 
 ///  A multi-limb fixed-point number represented as ArithExpr trees.
 ///  N = total limbs, F = fractional limbs.
-///  Operations build ArithExpr; axioms proved on ghost `value: int`.
+///  Operations build ArithExpr trees. Equivalence is normalized structural
+///  equality — two GpuFixedPoints are equivalent iff their normalized
+///  ArithExpr limbs are structurally identical. No ghost shortcuts.
 pub struct GpuFixedPoint<const N: usize, const F: usize> {
     ///  ArithExpr for each limb (the GPU computation tree).
     pub limbs: Seq<ArithExpr>,
-    ///  Ghost exact mathematical value (for Ring axiom proofs).
-    pub ghost value: int,
 }
 
-//  ── Equivalence: compare ghost values ──────────────────
+//  ── Equivalence: normalized structural equality of limbs ──
 
 impl<const N: usize, const F: usize> Equivalence for GpuFixedPoint<N, F> {
     open spec fn eqv(self, other: Self) -> bool {
-        self.value == other.value
+        self.limbs.len() == other.limbs.len()
+        && forall|j: int| 0 <= j < self.limbs.len() ==>
+            arith_normalize(&#[trigger] self.limbs[j])
+            == arith_normalize(&other.limbs[j])
     }
 
     proof fn axiom_eqv_reflexive(a: Self) {}
