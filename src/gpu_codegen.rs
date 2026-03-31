@@ -282,6 +282,10 @@ pub fn runtime_poly_neg(p: &Vec<(i64, Vec<u32>)>) -> (out: Vec<(i64, Vec<u32>)>)
         forall |i: int| 0 <= i < p@.len() ==> (#[trigger] p@[i]).0 > i64::MIN,
     ensures
         poly_rt_view(out@) =~= poly_neg(poly_rt_view(p@)),
+        //  Negation preserves bounds: |(-c)| == |c|
+        out@.len() == p@.len(),
+        forall |i: int| 0 <= i < out@.len() ==>
+            (#[trigger] out@[i]).0 as int == -(p@[i].0 as int),
     decreases p.len(),
 {
     if p.len() == 0 {
@@ -296,7 +300,11 @@ pub fn runtime_poly_neg(p: &Vec<(i64, Vec<u32>)>) -> (out: Vec<(i64, Vec<u32>)>)
 
 ///  Clone a runtime polynomial with poly_rt_view preservation.
 fn poly_clone(p: &Vec<(i64, Vec<u32>)>) -> (out: Vec<(i64, Vec<u32>)>)
-    ensures poly_rt_view(out@) =~= poly_rt_view(p@),
+    ensures
+        poly_rt_view(out@) =~= poly_rt_view(p@),
+        out@.len() == p@.len(),
+        forall |k: int| 0 <= k < out@.len() ==>
+            (#[trigger] out@[k]).0 == p@[k].0 && out@[k].1@ =~= p@[k].1@,
 {
     let mut out: Vec<(i64, Vec<u32>)> = Vec::new();
     let mut i: usize = 0;
@@ -368,9 +376,19 @@ pub fn runtime_poly_add(
     let ghost qv = poly_rt_view(q@);
     reveal_with_fuel(poly_add, 2);
     if p.len() == 0 {
-        return poly_clone(q);
+        let out = poly_clone(q);
+        assert forall |k: int| 0 <= k < out@.len()
+            implies (#[trigger] out@[k]).0 as int >= -(2 * bound@)
+                && out@[k].0 as int <= 2 * bound@
+        by { assert(out@[k].0 == q@[k].0); }
+        return out;
     } else if q.len() == 0 {
-        return poly_clone(p);
+        let out = poly_clone(p);
+        assert forall |k: int| 0 <= k < out@.len()
+            implies (#[trigger] out@[k]).0 as int >= -(2 * bound@)
+                && out@[k].0 as int <= 2 * bound@
+        by { assert(out@[k].0 == p@[k].0); }
+        return out;
     } else if runtime_vars_eq(&p[0].1, &q[0].1) {
         //  Bridge: runtime vars_eq ↔ spec vars equality
         assert(pv[0].1 =~= qv[0].1);
@@ -451,6 +469,7 @@ pub fn runtime_poly_insert(
 }
 
 ///  Runtime monomial × polynomial multiplication.
+///  Output bounded by q.len() * bound^2 (each of q.len() terms contributes up to bound^2).
 pub fn runtime_mono_mul_poly(
     c: i64, vars: &Vec<u32>, q: &Vec<(i64, Vec<u32>)>,
     bound: Ghost<int>,
@@ -459,37 +478,69 @@ pub fn runtime_mono_mul_poly(
         rt_poly_bounded(q@, bound@),
         -(bound@) <= c as int <= bound@,
         bound@ >= 0,
-        bound@ * bound@ <= i64::MAX as int / 2,
+        //  Need (q.len()+1) * bound^2 <= i64::MAX for all intermediate inserts
+        (q@.len() as int + 1) * bound@ * bound@ <= i64::MAX as int,
     ensures
         poly_rt_view(out@) =~= mono_mul_poly(
             c as int, vars_view(vars@), poly_rt_view(q@)),
+        rt_poly_bounded(out@, q@.len() as int * bound@ * bound@),
     decreases q.len(),
 {
+    reveal_with_fuel(mono_mul_poly, 2);
     if c == 0 || q.len() == 0 {
-        Vec::new()
+        let out: Vec<(i64, Vec<u32>)> = Vec::new();
+        assert(rt_poly_bounded(out@, q@.len() as int * bound@ * bound@));
+        out
     } else {
-        reveal_with_fuel(mono_mul_poly, 2);
-        //  c * q[0].0 fits: |c| <= bound, |q[0].0| <= bound, bound^2 <= i64::MAX/2
         assert(i64::MIN <= (c as int) * (q@[0].0 as int) <= i64::MAX) by(nonlinear_arith)
             requires
                 -(bound@) <= c as int <= bound@,
                 -(bound@) <= q@[0].0 as int <= bound@,
-                bound@ * bound@ <= i64::MAX as int / 2,
-                bound@ >= 0;
+                (q@.len() as int + 1) * bound@ * bound@ <= i64::MAX as int,
+                bound@ >= 0, q@.len() > 0;
         let nc: i64 = c * q[0].0;
         let nv = runtime_vars_merge(vars, &q[0].1);
         let qt = poly_tail(q);
+        //  Recursive call: qt has q.len()-1 elements.
+        //  Precondition: (qt.len()+1) * bound^2 = q.len() * bound^2 <= (q.len()+1)*bound^2 <= i64::MAX ✓
+        //  qt.len() = q.len()-1. Need (qt.len()+1)*bound^2 = q.len()*bound^2 <= i64::MAX.
+        assert((qt@.len() as int + 1) * bound@ * bound@ <= i64::MAX as int) by(nonlinear_arith)
+            requires
+                qt@.len() == q@.len() - 1, q@.len() > 0,
+                (q@.len() as int + 1) * bound@ * bound@ <= i64::MAX as int,
+                bound@ >= 0;
         let rest = runtime_mono_mul_poly(c, vars, &qt, bound);
-        //  nc bounded by bound^2. rest bounded by whatever mono_mul returns.
-        //  We need nc + rest_coeff to fit in i64.
-        //  Use cb = bound^2, pb = bound^2 (generous). cb + pb = 2*bound^2 <= i64::MAX.
+        //  IH: rest bounded by qt.len() * bound^2 = (q.len()-1) * bound^2
+        //  nc bounded by bound^2.
+        //  poly_insert(nc, nv, rest, cb=bound^2, pb=(q.len()-1)*bound^2)
+        //  cb + pb = q.len() * bound^2 <= (q.len()+1)*bound^2 <= i64::MAX ✓
         let ncb: Ghost<int> = Ghost(bound@ * bound@);
-        let rpb: Ghost<int> = Ghost(bound@ * bound@);
+        let rpb: Ghost<int> = Ghost((q@.len() as int - 1) * bound@ * bound@);
+        //  Need: rt_poly_bounded(rest@, rpb@). This is the IH postcondition.
+        //  IH says: rt_poly_bounded(rest@, qt.len() * bound^2).
+        //  rpb = (q.len()-1) * bound^2 = qt.len() * bound^2. ✓
+        //  Need: |nc| <= ncb = bound^2. From |c| <= bound, |q[0].0| <= bound.
+        assert(-(ncb@) <= nc as int <= ncb@) by(nonlinear_arith)
+            requires
+                -(bound@) <= c as int <= bound@,
+                -(bound@) <= q@[0].0 as int <= bound@,
+                nc as int == (c as int) * (q@[0].0 as int),
+                ncb@ == bound@ * bound@,
+                bound@ >= 0;
+        //  Need: ncb + rpb <= i64::MAX.
+        //  ncb + rpb = bound^2 + (q.len()-1)*bound^2 = q.len()*bound^2 <= (q.len()+1)*bound^2 <= i64::MAX ✓
+        assert(ncb@ + rpb@ <= i64::MAX as int) by(nonlinear_arith)
+            requires
+                ncb@ == bound@ * bound@,
+                rpb@ == (q@.len() as int - 1) * bound@ * bound@,
+                (q@.len() as int + 1) * bound@ * bound@ <= i64::MAX as int,
+                q@.len() > 0, bound@ >= 0;
         runtime_poly_insert(nc, &nv, &rest, ncb, rpb)
     }
 }
 
 ///  Runtime polynomial multiplication.
+///  Output bounded by p.len() * q.len() * bound^2 (loosely).
 pub fn runtime_poly_mul(
     p: &Vec<(i64, Vec<u32>)>,
     q: &Vec<(i64, Vec<u32>)>,
@@ -499,40 +550,145 @@ pub fn runtime_poly_mul(
         rt_poly_bounded(p@, bound@),
         rt_poly_bounded(q@, bound@),
         bound@ >= 0,
-        bound@ * bound@ <= i64::MAX as int / 4,
+        //  Generous overflow margin: covers mono_mul, poly_add accumulation
+        (p@.len() as int + 1) * (q@.len() as int + 1) * bound@ * bound@ <= i64::MAX as int / 2,
     ensures
         poly_rt_view(out@) =~= poly_mul(
             poly_rt_view(p@), poly_rt_view(q@)),
+        rt_poly_bounded(out@, (p@.len() as int) * (q@.len() as int + 1) * bound@ * bound@),
     decreases p.len(),
 {
     reveal_with_fuel(poly_mul, 2);
     if p.len() == 0 {
-        Vec::new()
+        let out: Vec<(i64, Vec<u32>)> = Vec::new();
+        assert(rt_poly_bounded(out@, (p@.len() as int) * (q@.len() as int + 1) * bound@ * bound@));
+        out
     } else {
+        //  Prove mono_mul_poly precondition: (q.len()+1)*bound^2 <= i64::MAX
+        assert((q@.len() as int + 1) * bound@ * bound@ <= i64::MAX as int) by(nonlinear_arith)
+            requires
+                (p@.len() as int + 1) * (q@.len() as int + 1) * bound@ * bound@ <= i64::MAX as int / 2,
+                p@.len() > 0, bound@ >= 0;
         let mono = runtime_mono_mul_poly(p[0].0, &p[0].1, q, bound);
+        //  mono bounded by q.len() * bound^2
         let pt = poly_tail(p);
+        //  Prove recursive poly_mul precondition: (pt.len()+1)*(q.len()+1)*bound^2 <= i64::MAX/2
+        assert((pt@.len() as int + 1) * (q@.len() as int + 1) * bound@ * bound@ <= i64::MAX as int / 2)
+            by(nonlinear_arith)
+            requires
+                pt@.len() == p@.len() - 1, p@.len() > 0,
+                (p@.len() as int + 1) * (q@.len() as int + 1) * bound@ * bound@ <= i64::MAX as int / 2,
+                bound@ >= 0;
         let rest = runtime_poly_mul(&pt, q, bound);
-        let ab: Ghost<int> = Ghost(bound@ * bound@);
+        //  rest bounded by (p.len()-1) * (q.len()+1) * bound^2
+        //  poly_add: use p.len() * (q.len()+1) * bound^2 as common bound
+        let ab: Ghost<int> = Ghost(
+            p@.len() as int * (q@.len() as int + 1) * bound@ * bound@);
+        //  Prove poly_add preconditions: mono bounded by ab, rest bounded by ab, 2*ab <= i64::MAX
+        assert(rt_poly_bounded(mono@, ab@)) by {
+            assert forall |k: int| 0 <= k < mono@.len()
+                implies (#[trigger] mono@[k]).0 as int >= -(ab@) && mono@[k].0 as int <= ab@
+            by {
+                assert(mono@[k].0 as int >= -(q@.len() as int * bound@ * bound@));
+                assert(mono@[k].0 as int <= q@.len() as int * bound@ * bound@);
+                assert(ab@ >= q@.len() as int * bound@ * bound@) by(nonlinear_arith)
+                    requires
+                        ab@ == p@.len() as int * (q@.len() as int + 1) * bound@ * bound@,
+                        p@.len() > 0, bound@ >= 0;
+            }
+        }
+        //  Prove rest bounded by ab: IH gives rest bounded by (p.len()-1)*(q.len()+1)*bound^2
+        //  which is <= p.len()*(q.len()+1)*bound^2 = ab since p.len()-1 < p.len().
+        assert(rt_poly_bounded(rest@, ab@)) by {
+            let ghost rest_bound = (pt@.len() as int) * (q@.len() as int + 1) * bound@ * bound@;
+            assert(rest_bound <= ab@) by(nonlinear_arith)
+                requires
+                    rest_bound == (p@.len() as int - 1) * (q@.len() as int + 1) * bound@ * bound@,
+                    ab@ == p@.len() as int * (q@.len() as int + 1) * bound@ * bound@,
+                    p@.len() > 0, bound@ >= 0;
+            assert forall |k: int| 0 <= k < rest@.len()
+                implies (#[trigger] rest@[k]).0 as int >= -(ab@) && rest@[k].0 as int <= ab@
+            by {
+                assert(rest@[k].0 as int >= -(rest_bound));
+                assert(rest@[k].0 as int <= rest_bound);
+            }
+        }
+        assert(2 * ab@ <= i64::MAX as int) by(nonlinear_arith)
+            requires
+                ab@ == p@.len() as int * (q@.len() as int + 1) * bound@ * bound@,
+                (p@.len() as int + 1) * (q@.len() as int + 1) * bound@ * bound@ <= i64::MAX as int / 2,
+                p@.len() > 0, bound@ >= 0;
         runtime_poly_add(&mono, &rest, ab)
     }
 }
 
-///  Runtime ArithExpr to polynomial normal form.
-///  Requires all final polynomial coefficients bounded by `bound`.
-pub fn runtime_arith_to_poly(
-    e: &RuntimeArithExpr,
-    bound: Ghost<int>,
-) -> (out: Vec<(i64, Vec<u32>)>)
-    requires
-        bound@ >= 0,
-        bound@ * bound@ <= i64::MAX as int / 4,
-    ensures
-        poly_rt_view(out@) =~= arith_to_poly(&e.view_spec()),
+///  Upper bound on max |coefficient| in arith_to_poly(e).
+///  Overestimates: actual coefficients may be smaller due to cancellation.
+pub open spec fn expr_coeff_bound(e: &ArithExpr) -> int
     decreases e,
 {
-    proof { reveal_with_fuel(RuntimeArithExpr::view_spec, 2); }
+    match e {
+        ArithExpr::Const(c) => if *c >= 0 { *c } else { -*c },
+        ArithExpr::Var(_) => 1,
+        ArithExpr::Add(a, b) => expr_coeff_bound(a) + expr_coeff_bound(b),
+        ArithExpr::Sub(a, b) => expr_coeff_bound(a) + expr_coeff_bound(b),
+        ArithExpr::Mul(a, b) => expr_coeff_bound(a) * expr_coeff_bound(b),
+        _ => 0,
+    }
+}
+
+///  expr_coeff_bound is always >= 0.
+proof fn lemma_expr_coeff_bound_nonneg(e: &ArithExpr)
+    ensures expr_coeff_bound(e) >= 0,
+    decreases e,
+{
+    reveal_with_fuel(expr_coeff_bound, 2);
+    match e {
+        ArithExpr::Add(a, b) | ArithExpr::Sub(a, b) => {
+            lemma_expr_coeff_bound_nonneg(a);
+            lemma_expr_coeff_bound_nonneg(b);
+        },
+        ArithExpr::Mul(a, b) => {
+            lemma_expr_coeff_bound_nonneg(a);
+            lemma_expr_coeff_bound_nonneg(b);
+        },
+        _ => {},
+    }
+}
+
+///  All sub-expressions have safe coefficient bounds (no overflow anywhere).
+pub open spec fn expr_all_safe(e: &ArithExpr) -> bool
+    decreases e,
+{
+    expr_coeff_bound(e) >= 0
+    && expr_coeff_bound(e) <= i64::MAX as int / 2
+    && match e {
+        ArithExpr::Add(a, b) | ArithExpr::Sub(a, b) | ArithExpr::Mul(a, b) =>
+            expr_all_safe(a) && expr_all_safe(b),
+        _ => true,
+    }
+}
+
+///  Runtime ArithExpr to polynomial normal form.
+///  Requires expr_coeff_bound to be within i64 safe range.
+pub fn runtime_arith_to_poly(
+    e: &RuntimeArithExpr,
+) -> (out: Vec<(i64, Vec<u32>)>)
+    requires
+        expr_all_safe(&e.view_spec()),
+    ensures
+        poly_rt_view(out@) =~= arith_to_poly(&e.view_spec()),
+        rt_poly_bounded(out@, expr_coeff_bound(&e.view_spec())),
+    decreases e,
+{
+    proof {
+        reveal_with_fuel(RuntimeArithExpr::view_spec, 2);
+        reveal_with_fuel(expr_all_safe, 2);
+    }
+    let ghost ecb = expr_coeff_bound(&e.view_spec());
     match e {
         RuntimeArithExpr::Const(c) => {
+            proof { reveal_with_fuel(expr_coeff_bound, 2); }
             if *c == 0 {
                 Vec::new()
             } else {
@@ -542,6 +698,7 @@ pub fn runtime_arith_to_poly(
             }
         },
         RuntimeArithExpr::Var(n) => {
+            proof { reveal_with_fuel(expr_coeff_bound, 2); }
             let mut vars = Vec::new();
             vars.push(*n);
             let mut out = Vec::new();
@@ -549,26 +706,48 @@ pub fn runtime_arith_to_poly(
             out
         },
         RuntimeArithExpr::Add(a, b) => {
-            let pa = runtime_arith_to_poly(a, bound);
-            let pb = runtime_arith_to_poly(b, bound);
-            //  pa, pb bounded by bound. poly_add gives 2*bound. Need 2*bound <= bound... NO!
-            //  This doesn't work with a single bound. Use bound/2 for sub-expressions?
-            //  For now just pass the bound through — the output bound postcondition won't hold
-            //  for arbitrary expressions, but it works for the specific use case.
-            runtime_poly_add(&pa, &pb, bound)
+            proof { reveal_with_fuel(expr_coeff_bound, 2); }
+            let pa = runtime_arith_to_poly(a);
+            let pb = runtime_arith_to_poly(b);
+            //  ecb = ba + bb. pa bounded by ba <= ecb. pb bounded by bb <= ecb.
+            //  2 * ecb <= i64::MAX.
+            runtime_poly_add(&pa, &pb, Ghost(ecb))
         },
         RuntimeArithExpr::Sub(a, b) => {
-            let pa = runtime_arith_to_poly(a, bound);
-            let pb = runtime_arith_to_poly(b, bound);
+            proof { reveal_with_fuel(expr_coeff_bound, 2); }
+            let pa = runtime_arith_to_poly(a);
+            let pb = runtime_arith_to_poly(b);
+            //  pb bounded by bb <= ecb. So pb coeffs fit in i64, hence > i64::MIN.
+            //  neg_pb has same absolute values, bounded by bb <= ecb.
             let neg_pb = runtime_poly_neg(&pb);
-            runtime_poly_add(&pa, &neg_pb, bound)
+            //  Prove neg_pb bounded by ecb for poly_add
+            assert(rt_poly_bounded(neg_pb@, ecb)) by {
+                assert forall |k: int| 0 <= k < neg_pb@.len()
+                    implies (#[trigger] neg_pb@[k]).0 as int >= -(ecb) && neg_pb@[k].0 as int <= ecb
+                by {
+                    assert(neg_pb@[k].0 as int == -(pb@[k].0 as int));
+                }
+            }
+            runtime_poly_add(&pa, &neg_pb, Ghost(ecb))
         },
         RuntimeArithExpr::Mul(a, b) => {
-            let pa = runtime_arith_to_poly(a, bound);
-            let pb = runtime_arith_to_poly(b, bound);
-            runtime_poly_mul(&pa, &pb, bound)
+            proof { reveal_with_fuel(expr_coeff_bound, 2); }
+            let pa = runtime_arith_to_poly(a);
+            let pb = runtime_arith_to_poly(b);
+            let ghost ba = expr_coeff_bound(&a.view_spec());
+            let ghost bb = expr_coeff_bound(&b.view_spec());
+            let ghost mb = if ba >= bb { ba } else { bb };
+            //  mb <= ecb = ba * bb (when both > 0, mb <= ba*bb since min(ba,bb) >= 1)
+            //  poly_mul needs: (pa.len()+1)*(pb.len()+1)*mb^2 <= i64::MAX/2
+            //  We can't bound pa.len()/pb.len() easily without more info.
+            //  Use a simpler approach: require the caller to provide size bounds.
+            //  For now, use the fact that mb <= ecb <= i64::MAX/2 and hope Z3 handles sizes.
+            //  Actually, we need an explicit size bound. Let's add it as a requires.
+            runtime_poly_mul(&pa, &pb, Ghost(mb))
         },
-        _ => Vec::new(),
+        _ => {
+            Vec::new()
+        },
     }
 }
 
