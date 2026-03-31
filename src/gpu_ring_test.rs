@@ -3649,4 +3649,323 @@ proof fn lemma_poly_identity(
     lemma_poly_wf_eq_from_coeff(p, q);
 }
 
+//  ══════════════════════════════════════════════════════════════
+//  Coefficient bound infrastructure
+//  ══════════════════════════════════════════════════════════════
+
+///  Upper bound on max |coefficient| in arith_to_poly(e).
+///  Always >= Σ|coefficients|, hence >= max|individual coefficient|.
+pub open spec fn expr_coeff_bound(e: &ArithExpr) -> int
+    decreases e,
+{
+    match e {
+        ArithExpr::Const(c) => if *c >= 0 { *c } else { -*c },
+        ArithExpr::Var(_) => 1,
+        ArithExpr::Add(a, b) => expr_coeff_bound(a) + expr_coeff_bound(b),
+        ArithExpr::Sub(a, b) => expr_coeff_bound(a) + expr_coeff_bound(b),
+        ArithExpr::Mul(a, b) => expr_coeff_bound(a) * expr_coeff_bound(b),
+        _ => 0,
+    }
+}
+
+///  expr_coeff_bound is always >= 0.
+pub proof fn lemma_expr_coeff_bound_nonneg(e: &ArithExpr)
+    ensures expr_coeff_bound(e) >= 0,
+    decreases e,
+{
+    reveal_with_fuel(expr_coeff_bound, 2);
+    match e {
+        ArithExpr::Add(a, b) | ArithExpr::Sub(a, b) => {
+            lemma_expr_coeff_bound_nonneg(a);
+            lemma_expr_coeff_bound_nonneg(b);
+        },
+        ArithExpr::Mul(a, b) => {
+            lemma_expr_coeff_bound_nonneg(a);
+            lemma_expr_coeff_bound_nonneg(b);
+        },
+        _ => {},
+    }
+}
+
+///  Sum of absolute values of polynomial coefficients.
+pub open spec fn poly_sum_abs(p: Seq<(int, Seq<nat>)>) -> int
+    decreases p.len(),
+{
+    if p.len() == 0 { 0int }
+    else {
+        (if p[0].0 >= 0 { p[0].0 } else { -p[0].0 })
+        + poly_sum_abs(p.subrange(1, p.len() as int))
+    }
+}
+
+///  poly_sum_abs is always >= 0.
+pub proof fn lemma_poly_sum_abs_nonneg(p: Seq<(int, Seq<nat>)>)
+    ensures poly_sum_abs(p) >= 0,
+    decreases p.len(),
+{
+    if p.len() > 0 {
+        lemma_poly_sum_abs_nonneg(p.subrange(1, p.len() as int));
+    }
+}
+
+///  Each individual coefficient is bounded by poly_sum_abs.
+pub proof fn lemma_poly_sum_abs_bounds_individual(p: Seq<(int, Seq<nat>)>, k: int)
+    requires 0 <= k < p.len(),
+    ensures p[k].0 >= -poly_sum_abs(p), p[k].0 <= poly_sum_abs(p),
+    decreases p.len(),
+{
+    lemma_poly_sum_abs_nonneg(p);
+    if k == 0 {
+        lemma_poly_sum_abs_nonneg(p.subrange(1, p.len() as int));
+    } else {
+        lemma_poly_sum_abs_bounds_individual(p.subrange(1, p.len() as int), k - 1);
+        assert(p.subrange(1, p.len() as int)[k-1] == p[k]);
+    }
+}
+
+///  poly_sum_abs of a prepended element.
+proof fn lemma_poly_sum_abs_prepend(head: (int, Seq<nat>), tail: Seq<(int, Seq<nat>)>)
+    ensures poly_sum_abs(seq![head] + tail) ==
+        (if head.0 >= 0 { head.0 } else { -head.0 }) + poly_sum_abs(tail),
+{
+    let s = seq![head] + tail;
+    assert(s.len() > 0);
+    assert(s[0] == head);
+    assert(s.subrange(1, s.len() as int) =~= tail);
+    reveal_with_fuel(poly_sum_abs, 2);
+}
+
+///  Triangle inequality for integers: |a + b| <= |a| + |b|.
+proof fn lemma_abs_triangle(a: int, b: int)
+    ensures
+        (if a + b >= 0 { a + b } else { -(a + b) })
+        <= (if a >= 0 { a } else { -a }) + (if b >= 0 { b } else { -b }),
+{}
+
+///  poly_neg preserves poly_sum_abs.
+proof fn lemma_poly_neg_sum_abs(p: Seq<(int, Seq<nat>)>)
+    ensures poly_sum_abs(poly_neg(p)) == poly_sum_abs(p),
+    decreases p.len(),
+{
+    reveal_with_fuel(poly_sum_abs, 2);
+    reveal_with_fuel(poly_neg, 2);
+    if p.len() == 0 {
+    } else {
+        let pt = p.subrange(1, p.len() as int);
+        lemma_poly_neg_sum_abs(pt);
+        let np = poly_neg(p);
+        let npt = poly_neg(pt);
+        //  np = [(-p[0].0, p[0].1)] + npt
+        //  poly_sum_abs unfolds on np: |np[0].0| + poly_sum_abs(np.subrange(1,...))
+        //  np.subrange(1,...) =~= npt
+        assert(np.subrange(1, np.len() as int) =~= npt);
+        //  |(-x)| == |x|
+        assert((if np[0].0 >= 0 { np[0].0 } else { -np[0].0 })
+            == (if p[0].0 >= 0 { p[0].0 } else { -p[0].0 }));
+    }
+}
+
+///  poly_add: sum_abs of result <= sum of inputs' sum_abs.
+proof fn lemma_poly_add_sum_abs(
+    p: Seq<(int, Seq<nat>)>,
+    q: Seq<(int, Seq<nat>)>,
+)
+    ensures poly_sum_abs(poly_add(p, q)) <= poly_sum_abs(p) + poly_sum_abs(q),
+    decreases p.len() + q.len(),
+{
+    reveal_with_fuel(poly_add, 2);
+    reveal_with_fuel(poly_sum_abs, 2);
+    lemma_poly_sum_abs_nonneg(p);
+    lemma_poly_sum_abs_nonneg(q);
+    if p.len() == 0 { return; }
+    if q.len() == 0 { return; }
+    let pt = p.subrange(1, p.len() as int);
+    let qt = q.subrange(1, q.len() as int);
+    lemma_poly_sum_abs_nonneg(pt);
+    lemma_poly_sum_abs_nonneg(qt);
+    if p[0].1 =~= q[0].1 {
+        let c = p[0].0 + q[0].0;
+        lemma_poly_add_sum_abs(pt, qt);
+        let rest = poly_add(pt, qt);
+        if c == 0 {
+            //  result = rest. rest <= sa(pt) + sa(qt) <= sa(p) + sa(q).
+        } else {
+            lemma_abs_triangle(p[0].0, q[0].0);
+            lemma_poly_sum_abs_prepend((c, p[0].1), rest);
+        }
+    } else if vars_lt(p[0].1, q[0].1) {
+        lemma_poly_add_sum_abs(pt, q);
+        lemma_poly_sum_abs_prepend(p[0], poly_add(pt, q));
+    } else {
+        lemma_poly_add_sum_abs(p, qt);
+        lemma_poly_sum_abs_prepend(q[0], poly_add(p, qt));
+    }
+}
+
+///  poly_insert: sum_abs of result <= |c| + sum_abs(p).
+proof fn lemma_poly_insert_sum_abs(
+    c: int, v: Seq<nat>,
+    p: Seq<(int, Seq<nat>)>,
+)
+    ensures poly_sum_abs(poly_insert(c, v, p))
+        <= (if c >= 0 { c } else { -c }) + poly_sum_abs(p),
+    decreases p.len(),
+{
+    reveal_with_fuel(poly_insert, 2);
+    lemma_poly_sum_abs_nonneg(p);
+    reveal_with_fuel(poly_sum_abs, 2);
+    if c == 0 { return; }
+    if p.len() == 0 { return; }
+    let pt = p.subrange(1, p.len() as int);
+    lemma_poly_sum_abs_nonneg(pt);
+    if v =~= p[0].1 {
+        let nc = c + p[0].0;
+        if nc == 0 {
+            //  result = pt <= |c| + sa(p) since sa(p) = |p[0].0| + sa(pt) >= sa(pt)
+        } else {
+            lemma_abs_triangle(c, p[0].0);
+            lemma_poly_sum_abs_prepend((nc, v), pt);
+        }
+    } else if vars_lt(v, p[0].1) {
+        lemma_poly_sum_abs_prepend((c, v), p);
+    } else {
+        lemma_poly_insert_sum_abs(c, v, pt);
+        lemma_poly_sum_abs_prepend(p[0], poly_insert(c, v, pt));
+    }
+}
+
+///  mono_mul_poly: sum_abs of result <= |c| * sum_abs(q).
+proof fn lemma_mono_mul_sum_abs(
+    c: int, vars: Seq<nat>,
+    q: Seq<(int, Seq<nat>)>,
+)
+    ensures poly_sum_abs(mono_mul_poly(c, vars, q))
+        <= (if c >= 0 { c } else { -c }) * poly_sum_abs(q),
+    decreases q.len(),
+{
+    reveal_with_fuel(mono_mul_poly, 2);
+    reveal_with_fuel(poly_sum_abs, 2);
+    lemma_poly_sum_abs_nonneg(q);
+    if c == 0 || q.len() == 0 {
+    } else {
+        let nc = c * q[0].0;
+        let nv = vars_merge(vars, q[0].1);
+        let qt = q.subrange(1, q.len() as int);
+        let rest = mono_mul_poly(c, vars, qt);
+        lemma_mono_mul_sum_abs(c, vars, qt);
+        lemma_poly_insert_sum_abs(nc, nv, rest);
+        lemma_poly_sum_abs_nonneg(qt);
+        lemma_poly_sum_abs_nonneg(rest);
+        assert(poly_sum_abs(mono_mul_poly(c, vars, q))
+            <= (if c >= 0 { c } else { -c }) * poly_sum_abs(q))
+            by(nonlinear_arith)
+            requires
+                poly_sum_abs(poly_insert(nc, nv, rest))
+                    <= (if nc >= 0 { nc } else { -nc }) + poly_sum_abs(rest),
+                poly_sum_abs(rest)
+                    <= (if c >= 0 { c } else { -c }) * poly_sum_abs(qt),
+                nc == c * q[0].0,
+                poly_sum_abs(q) == (if q[0].0 >= 0 { q[0].0 } else { -q[0].0 })
+                    + poly_sum_abs(qt),
+                poly_sum_abs(qt) >= 0, poly_sum_abs(rest) >= 0,
+                mono_mul_poly(c, vars, q) == poly_insert(nc, nv, rest);
+    }
+}
+
+///  poly_mul: sum_abs of result <= sum_abs(p) * sum_abs(q).
+proof fn lemma_poly_mul_sum_abs(
+    p: Seq<(int, Seq<nat>)>,
+    q: Seq<(int, Seq<nat>)>,
+)
+    ensures poly_sum_abs(poly_mul(p, q)) <= poly_sum_abs(p) * poly_sum_abs(q),
+    decreases p.len(),
+{
+    reveal_with_fuel(poly_mul, 2);
+    if p.len() == 0 {
+    } else {
+        let pt = p.subrange(1, p.len() as int);
+        let mono = mono_mul_poly(p[0].0, p[0].1, q);
+        let rest = poly_mul(pt, q);
+        lemma_mono_mul_sum_abs(p[0].0, p[0].1, q);
+        lemma_poly_mul_sum_abs(pt, q);
+        lemma_poly_add_sum_abs(mono, rest);
+        lemma_poly_sum_abs_nonneg(q);
+        lemma_poly_sum_abs_nonneg(pt);
+        lemma_poly_sum_abs_nonneg(mono);
+        lemma_poly_sum_abs_nonneg(rest);
+        assert(poly_sum_abs(poly_mul(p, q)) <= poly_sum_abs(p) * poly_sum_abs(q))
+            by(nonlinear_arith)
+            requires
+                poly_sum_abs(poly_add(mono, rest))
+                    <= poly_sum_abs(mono) + poly_sum_abs(rest),
+                poly_sum_abs(mono)
+                    <= (if p[0].0 >= 0 { p[0].0 } else { -p[0].0 }) * poly_sum_abs(q),
+                poly_sum_abs(rest) <= poly_sum_abs(pt) * poly_sum_abs(q),
+                poly_sum_abs(p) == (if p[0].0 >= 0 { p[0].0 } else { -p[0].0 })
+                    + poly_sum_abs(pt),
+                poly_sum_abs(q) >= 0, poly_sum_abs(pt) >= 0,
+                poly_sum_abs(mono) >= 0, poly_sum_abs(rest) >= 0,
+                poly_mul(p, q) == poly_add(mono, rest);
+    }
+}
+
+///  arith_to_poly: sum_abs bounded by expr_coeff_bound.
+pub proof fn lemma_arith_to_poly_sum_abs(e: &ArithExpr)
+    ensures poly_sum_abs(arith_to_poly(e)) <= expr_coeff_bound(e),
+    decreases e,
+{
+    reveal_with_fuel(expr_coeff_bound, 2);
+    reveal_with_fuel(poly_sum_abs, 2);
+    reveal_with_fuel(arith_to_poly, 2);
+    match e {
+        ArithExpr::Const(c) => {},
+        ArithExpr::Var(n) => {},
+        ArithExpr::Add(a, b) => {
+            lemma_arith_to_poly_sum_abs(a);
+            lemma_arith_to_poly_sum_abs(b);
+            lemma_poly_add_sum_abs(arith_to_poly(a), arith_to_poly(b));
+        },
+        ArithExpr::Sub(a, b) => {
+            lemma_arith_to_poly_sum_abs(a);
+            lemma_arith_to_poly_sum_abs(b);
+            lemma_poly_neg_sum_abs(arith_to_poly(b));
+            lemma_poly_add_sum_abs(arith_to_poly(a), poly_neg(arith_to_poly(b)));
+        },
+        ArithExpr::Mul(a, b) => {
+            lemma_arith_to_poly_sum_abs(a);
+            lemma_arith_to_poly_sum_abs(b);
+            let pa = arith_to_poly(a);
+            let pb = arith_to_poly(b);
+            lemma_poly_mul_sum_abs(pa, pb);
+            lemma_expr_coeff_bound_nonneg(a);
+            lemma_expr_coeff_bound_nonneg(b);
+            lemma_poly_sum_abs_nonneg(pa);
+            lemma_poly_sum_abs_nonneg(pb);
+            //  Chain: sa(mul(pa,pb)) <= sa(pa)*sa(pb) <= ecb(a)*ecb(b) = ecb(Mul(a,b))
+            assert(poly_sum_abs(poly_mul(pa, pb)) <= expr_coeff_bound(e))
+                by(nonlinear_arith)
+                requires
+                    poly_sum_abs(poly_mul(pa, pb)) <= poly_sum_abs(pa) * poly_sum_abs(pb),
+                    poly_sum_abs(pa) <= expr_coeff_bound(a),
+                    poly_sum_abs(pb) <= expr_coeff_bound(b),
+                    expr_coeff_bound(a) >= 0, expr_coeff_bound(b) >= 0,
+                    poly_sum_abs(pa) >= 0, poly_sum_abs(pb) >= 0,
+                    expr_coeff_bound(e) == expr_coeff_bound(a) * expr_coeff_bound(b);
+        },
+        _ => {},
+    }
+}
+
+///  MAIN LEMMA: arith_to_poly(e) has all coefficients bounded by expr_coeff_bound(e).
+pub proof fn lemma_arith_to_poly_coeff_bound(e: &ArithExpr, k: int)
+    requires 0 <= k < arith_to_poly(e).len(),
+    ensures
+        arith_to_poly(e)[k].0 >= -expr_coeff_bound(e),
+        arith_to_poly(e)[k].0 <= expr_coeff_bound(e),
+{
+    lemma_arith_to_poly_sum_abs(e);
+    lemma_poly_sum_abs_bounds_individual(arith_to_poly(e), k);
+    //  |arith_to_poly(e)[k].0| <= poly_sum_abs(arith_to_poly(e)) <= expr_coeff_bound(e)
+}
+
 } //  verus!
