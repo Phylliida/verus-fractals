@@ -19,5 +19,4 @@ pub mod gpu_fixed_point;
 #[cfg(verus_keep_ghost)]
 pub mod gpu_ring_test;
 
-// #[cfg(verus_keep_ghost)]
-// pub mod gpu_codegen;  // temporarily disabled — needs rewrite for GpuExpr architecture
+pub mod gpu_codegen;
