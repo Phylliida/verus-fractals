@@ -3141,15 +3141,19 @@ proof fn lemma_wf_poly_nonzero_eval(p: Seq<(int, Seq<nat>)>)
         //  But we assumed poly_eval(p, env_ih) == 0 above. Contradiction!
         //  So the first 'if' branch should have returned. We never reach here.
         //  Prove: mono_eval(p[0].1, env_ih) = 0.
+        //  Contradiction: poly_eval(p, env_ih) should be 0 (from if-check above)
+        //  but p[0] contributes 0 (v0=0) and pt contributes != 0 (from IH).
+        //  So poly_eval(p, env_ih) = 0 + poly_eval(pt, env_ih) != 0. Contradiction!
+        //  Use env_ih as our non-zero witness (the if-check above must have returned).
         assert(p[0].1[0] == v0);
         lemma_mono_eval_zero_var(p[0].1, env_ih, v0);
-        //  So p[0].0 * 0 = 0
         assert(p[0].0 * mono_eval(p[0].1, env_ih) == 0int) by(nonlinear_arith)
             requires mono_eval(p[0].1, env_ih) == 0int;
-        //  poly_eval(p, env_ih) = 0 + poly_eval(pt, env_ih) = poly_eval(pt, env_ih) != 0
-        //  But we assumed poly_eval(p, env_ih) == 0. Contradiction.
+        //  poly_eval(p, env_ih) = p[0].0*mono(p[0].1, env_ih) + poly_eval(pt, env_ih)
+        //                       = 0 + poly_eval(pt, env_ih) = poly_eval(pt, env_ih) != 0
+        //  So poly_eval(p, env_ih) != 0, which means the earlier if-check should have
+        //  caught it and returned. Since we're here, Z3 sees false.
         assert(poly_eval(p, env_ih) != 0int);
-        //  This contradicts our earlier branch condition, so this code is unreachable.
     } else {
         //  env_ih[v0] != 0. Use filter + factor.
         //  p_v0 = v0-terms of p. p_fac = factor(p_v0). Lower total_degree.
@@ -3301,6 +3305,11 @@ proof fn lemma_wf_poly_nonzero_eval(p: Seq<(int, Seq<nat>)>)
         lemma_vars_sorted_factor(p_v0);
         lemma_wf_poly_nonzero_eval(p_fac);
         let env_fac: Seq<int> = choose |env: Seq<int>| poly_eval(p_fac, env) != 0int;
+        //  Try env_fac directly — it might already witness p != 0
+        if poly_eval(p, env_fac) != 0int {
+            return;
+        }
+
         let ev0_fac = if (v0 as int) < env_fac.len() { env_fac[v0 as int] } else { 0int };
 
         if ev0_fac != 0int {
@@ -3353,6 +3362,24 @@ proof fn lemma_wf_poly_nonzero_eval(p: Seq<(int, Seq<nat>)>)
                 assert(poly_eval(p_v0, env_fac) == ev0_fac * poly_eval(p_fac, env_fac));
                 assert(ev0_fac * poly_eval(p_fac, env_fac) != 0int) by(nonlinear_arith)
                     requires ev0_fac != 0int, poly_eval(p_fac, env_fac) != 0int;
+                //  The v0-independence chain:
+                //  poly_eval(p, env_fac) - poly_eval(p_v0, env_fac)
+                //  == poly_eval(p, env_v0z) - poly_eval(p_v0, env_v0z)
+                //  0 - (ev0_fac * p_fac_eval) == poly_eval(p, env_v0z) - 0
+                //  poly_eval(p, env_v0z) == -(ev0_fac * p_fac_eval) != 0
+                //  Connect p_v0 to poly_filter_first_var(p, v0)
+                assert(p_v0 =~= poly_filter_first_var(p, v0));
+                //  From v0-independence:
+                //  poly_eval(p, env_fac) - poly_eval(p_v0, env_fac)
+                //  == poly_eval(p, env_v0z) - poly_eval(p_v0, env_v0z)
+                //  Substituting known values:
+                //  0 - (ev0_fac * poly_eval(p_fac, env_fac))
+                //  == poly_eval(p, env_v0z) - 0
+                assert(poly_eval(p, env_fac) == 0int);
+                assert(poly_eval(p, env_v0z) ==
+                    poly_eval(p, env_fac) - poly_eval(p_v0, env_fac)
+                    + poly_eval(p_v0, env_v0z));
+                assert(poly_eval(p, env_v0z) != 0int);
             } else {
                 //  v0 out of range: env_v0z = env_fac (no change).
                 //  But then ev0_fac = 0 (out of range gives 0). Contradicts ev0_fac != 0.
@@ -3441,11 +3468,20 @@ proof fn lemma_wf_poly_nonzero_eval(p: Seq<(int, Seq<nat>)>)
                 if poly_eval(p, env_zero) != 0int {
                     //  env_zero is our witness!
                 } else {
-                    //  poly_eval(p, env_zero) == 0 → S_zero == 0.
-                    //  poly_eval(p, env_v01) = poly_eval(p_v0, env_v01) + S_zero
-                    //                        = poly_eval(p_v0, env_v01) + 0
-                    //                        = poly_eval(p_v0, env_v01) != 0. DONE!
-                    assert(poly_eval(p, env_v01) != 0int);
+                    //  poly_eval(p, env_zero) == 0 and poly_eval(p_v0, env_zero) == 0.
+                    //  By v0-independence:
+                    //  poly_eval(p, env_zero) - poly_eval(p_v0, env_zero)
+                    //  == poly_eval(p, env_v01) - poly_eval(p_v0, env_v01)
+                    //  0 - 0 == poly_eval(p, env_v01) - poly_eval(p_v0, env_v01)
+                    //  So poly_eval(p, env_v01) == poly_eval(p_v0, env_v01) != 0.
+                    //  p_v0 IS poly_filter_first_var(p, v0).
+                    //  v0-independence gives:
+                    //  poly_eval(p, env_zero) - poly_eval(p_v0, env_zero)
+                    //  == poly_eval(p, env_v01) - poly_eval(p_v0, env_v01)
+                    //  LHS = 0 - 0 = 0. So RHS = 0.
+                    //  poly_eval(p, env_v01) = poly_eval(p_v0, env_v01).
+                    assert(poly_eval(p, env_v01) - poly_eval(p_v0, env_v01) == 0int);
+                    assert(poly_eval(p, env_v01) == poly_eval(p_v0, env_v01));
                 }
             }
         }
