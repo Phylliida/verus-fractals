@@ -3835,7 +3835,7 @@ proof fn lemma_poly_insert_sum_abs(
 }
 
 ///  mono_mul_poly: sum_abs of result <= |c| * sum_abs(q).
-proof fn lemma_mono_mul_sum_abs(
+pub proof fn lemma_mono_mul_sum_abs(
     c: int, vars: Seq<nat>,
     q: Seq<(int, Seq<nat>)>,
 )
@@ -3873,7 +3873,7 @@ proof fn lemma_mono_mul_sum_abs(
 }
 
 ///  poly_mul: sum_abs of result <= sum_abs(p) * sum_abs(q).
-proof fn lemma_poly_mul_sum_abs(
+pub proof fn lemma_poly_mul_sum_abs(
     p: Seq<(int, Seq<nat>)>,
     q: Seq<(int, Seq<nat>)>,
 )
