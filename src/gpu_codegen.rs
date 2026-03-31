@@ -353,16 +353,28 @@ impl<const N: usize, const F: usize> RuntimeRingOps<GpuFixedPoint<N, F>> for Run
     }
 
     fn eq(&self, rhs: &Self) -> (out: bool) {
-        //  eqv compares ghost values which are opaque at exec level.
-        //  We compare the ArithExpr trees structurally as a proxy.
-        //  This may return false negatives (different trees, same value)
-        //  but is sound: the ensures is out == model().eqv(model()).
-        //  Since eqv is just value equality and we can't access values,
-        //  we conservatively return false.
-        //
-        //  SAFETY: eq is never called during shader generation.
-        //  It only exists to satisfy the RuntimeRingOps trait contract.
-        false
+        //  Compare all limbs structurally via RuntimeArithExpr::eq.
+        //  GpuFixedPoint::eqv compares ghost values, but since operations
+        //  preserve the ArithExpr↔value correspondence, structural equality
+        //  of limbs implies value equality.
+        let mut result = true;
+        let mut j: u32 = 0;
+        while j < N as u32
+            invariant
+                j <= N as u32,
+                self.limbs@.len() == N,
+                rhs.limbs@.len() == N,
+                N < 1000,
+                result == (forall|k: int| 0 <= k < j as int ==>
+                    (#[trigger] self.limbs@[k]).view_spec() == rhs.limbs@[k].view_spec()),
+            decreases N - j as usize,
+        {
+            if !self.limbs[j as usize].eq(&rhs.limbs[j as usize]) {
+                result = false;
+            }
+            j = j + 1;
+        }
+        result
     }
 
     fn copy(&self) -> (out: Self) {
