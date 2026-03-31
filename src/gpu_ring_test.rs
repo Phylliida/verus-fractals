@@ -2969,6 +2969,144 @@ proof fn lemma_sorted_vars_no_v0(vars: Seq<nat>, v0: nat)
     }
 }
 
+//  Zero-padding: extending env with zeros doesn't change mono_eval.
+proof fn lemma_mono_eval_zero_pad(
+    vars: Seq<nat>,
+    env: Seq<int>,
+    new_len: nat,
+)
+    requires new_len >= env.len(),
+    ensures
+        mono_eval(vars, Seq::new(new_len, |i: int|
+            if i < env.len() { env[i] } else { 0int }))
+        == mono_eval(vars, env),
+    decreases vars.len(),
+{
+    let env2 = Seq::new(new_len, |i: int|
+        if i < env.len() { env[i] } else { 0int });
+    if vars.len() == 0 {
+    } else {
+        let tail = vars.subrange(1, vars.len() as int);
+        lemma_mono_eval_zero_pad(tail, env, new_len);
+        //  For vars[0]: val in env2 == val in env.
+        //  if vars[0] < env.len(): env2[vars[0]] = env[vars[0]]. Same.
+        //  if env.len() <= vars[0] < new_len: env2[vars[0]] = 0, env out of range = 0. Same.
+        //  if vars[0] >= new_len: both out of range = 0. Same.
+    }
+}
+
+//  Zero-padding: extending env with zeros doesn't change poly_eval.
+proof fn lemma_poly_eval_zero_pad(
+    p: Seq<(int, Seq<nat>)>,
+    env: Seq<int>,
+    new_len: nat,
+)
+    requires new_len >= env.len(),
+    ensures
+        poly_eval(p, Seq::new(new_len, |i: int|
+            if i < env.len() { env[i] } else { 0int }))
+        == poly_eval(p, env),
+    decreases p.len(),
+{
+    if p.len() == 0 {
+    } else {
+        let tail = p.subrange(1, p.len() as int);
+        lemma_poly_eval_zero_pad(tail, env, new_len);
+        lemma_mono_eval_zero_pad(p[0].1, env, new_len);
+    }
+}
+
+//  Modular congruence: mono_eval(vars, env[v0:=r]) == mono_eval(vars, env) + r * m
+//  when env[v0] = 0. Returns the quotient m.
+proof fn lemma_mono_eval_mod_r(
+    vars: Seq<nat>,
+    env: Seq<int>,
+    v0: nat,
+    r: int,
+) -> (m: int)
+    requires
+        (v0 as int) < env.len(),
+        env[v0 as int] == 0int,
+    ensures
+        mono_eval(vars, env.update(v0 as int, r))
+            == mono_eval(vars, env) + r * m,
+    decreases vars.len(),
+{
+    let env2 = env.update(v0 as int, r);
+    if vars.len() == 0 {
+        0int
+    } else {
+        let w = vars[0];
+        let tail = vars.subrange(1, vars.len() as int);
+        let m_tail = lemma_mono_eval_mod_r(tail, env, v0, r);
+        if w == v0 {
+            assert(mono_eval(vars, env) == 0int) by(nonlinear_arith)
+                requires mono_eval(vars, env) == 0int * mono_eval(tail, env);
+            let m_out = mono_eval(tail, env2);
+            assert(mono_eval(vars, env2) == mono_eval(vars, env) + r * m_out)
+                by(nonlinear_arith)
+                requires
+                    mono_eval(vars, env2) == r * mono_eval(tail, env2),
+                    mono_eval(vars, env) == 0int,
+                    m_out == mono_eval(tail, env2);
+            m_out
+        } else {
+            //  env2 = env.update(v0, r). For w != v0:
+            //  if w < env.len(): env2[w] = env[w] (update at different index).
+            //  if w >= env.len(): both out of range, mono_eval uses 0.
+            let vw = if (w as int) < env.len() { env[w as int] } else { 0int };
+            if (w as int) < env.len() {
+                assert(env2[w as int] == env[w as int]);
+            }
+            let m_out = vw * m_tail;
+            assert(mono_eval(vars, env2) == mono_eval(vars, env) + r * m_out)
+                by(nonlinear_arith)
+                requires
+                    mono_eval(vars, env2) == vw * mono_eval(tail, env2),
+                    mono_eval(vars, env) == vw * mono_eval(tail, env),
+                    mono_eval(tail, env2) == mono_eval(tail, env) + r * m_tail,
+                    m_out == vw * m_tail;
+            m_out
+        }
+    }
+}
+
+//  Modular congruence: poly_eval(p, env[v0:=r]) == poly_eval(p, env) + r * q
+//  when env[v0] = 0. Returns the quotient q.
+proof fn lemma_poly_eval_mod_r(
+    p: Seq<(int, Seq<nat>)>,
+    env: Seq<int>,
+    v0: nat,
+    r: int,
+) -> (q: int)
+    requires
+        (v0 as int) < env.len(),
+        env[v0 as int] == 0int,
+    ensures
+        poly_eval(p, env.update(v0 as int, r))
+            == poly_eval(p, env) + r * q,
+    decreases p.len(),
+{
+    let env2 = env.update(v0 as int, r);
+    if p.len() == 0 {
+        0int
+    } else {
+        let tail = p.subrange(1, p.len() as int);
+        let q_tail = lemma_poly_eval_mod_r(tail, env, v0, r);
+        let m_mono = lemma_mono_eval_mod_r(p[0].1, env, v0, r);
+        let q_out = p[0].0 * m_mono + q_tail;
+        assert(poly_eval(p, env2) == poly_eval(p, env) + r * q_out)
+            by(nonlinear_arith)
+            requires
+                poly_eval(p, env2) == p[0].0 * mono_eval(p[0].1, env2) + poly_eval(tail, env2),
+                poly_eval(p, env) == p[0].0 * mono_eval(p[0].1, env) + poly_eval(tail, env),
+                mono_eval(p[0].1, env2) == mono_eval(p[0].1, env) + r * m_mono,
+                poly_eval(tail, env2) == poly_eval(tail, env) + r * q_tail,
+                q_out == p[0].0 * m_mono + q_tail;
+        q_out
+    }
+}
+
 proof fn lemma_wf_poly_nonzero_eval(p: Seq<(int, Seq<nat>)>)
     requires poly_wf(p), p.len() > 0, poly_vars_sorted(p),
     ensures exists |env: Seq<int>| poly_eval(p, env) != 0int,
@@ -3386,104 +3524,86 @@ proof fn lemma_wf_poly_nonzero_eval(p: Seq<(int, Seq<nat>)>)
                 assert(false);  // unreachable
             }
         } else {
-            //  env_fac[v0] == 0. S = 0. Use env_fac[v0:=1].
-            //  poly_eval(p, env_fac[v0:=1]) = 1 * poly_eval(p_fac, env_fac[v0:=1]) + S.
-            //  S = 0 (from env_fac[v0]=0 → S = -0*nonzero = 0).
-            //  If poly_eval(p_fac, env_fac[v0:=1]) != 0: done.
-            //  If == 0: p_fac has a root at v0=1 (and is non-zero at v0=0).
-            //  Root bound issue. For now: try v0=1 and v0=2.
-            let env_v01 = if (v0 as int) < env_fac.len() {
-                env_fac.update(v0 as int, 1int)
+            //  env_fac[v0] == 0 (or v0 out of range). Use modular congruence.
+            //  A = poly_eval(p_fac, env_fac) != 0.
+            //  Pick r = |A| + 1 >= 2. r cannot divide A (since |r| > |A| > 0).
+            //  By modular congruence: poly_eval(p_fac, env0[v0:=r]) = A + r * Q.
+            //  If this were 0: A = -r*Q, so r | A. Contradiction.
+            //  So poly_eval(p_fac, env_r) != 0. And r != 0.
+            //  poly_eval(p, env_r) = r * poly_eval(p_fac, env_r) + S.
+            //  S = 0 (v0-independent, was 0 at env0). So poly_eval(p, env_r) != 0.
+            let a_val = poly_eval(p_fac, env_fac);
+            let r_val: int = if a_val >= 0int { a_val + 1 } else { -a_val + 1 };
+
+            //  Build env0: env_fac zero-padded so v0 is in range, with env0[v0] = 0.
+            let new_len: nat = if (v0 as int) < env_fac.len() {
+                env_fac.len()
             } else {
-                Seq::new((v0 + 1) as nat, |i: int|
-                    if i < env_fac.len() { env_fac[i] }
-                    else if i == v0 as int { 1int } else { 0int })
+                (v0 + 1) as nat
             };
-            lemma_poly_eval_factor(p_v0, env_v01, v0);
-            if poly_eval(p_fac, env_v01) != 0int {
-                //  poly_eval(p_v0, env_v01) = 1 * poly_eval(p_fac, env_v01) != 0.
-                //  S = 0 (v0-independent, was 0 at env_fac). At env_v01: still 0.
-                //  poly_eval(p, env_v01) = poly_eval(p_v0, env_v01) + S = non-zero + 0 != 0.
-                //  For now: assert p_v0 is non-zero, then p = p_v0 + 0 is non-zero.
-                assert(poly_eval(p_v0, env_v01) != 0int) by(nonlinear_arith)
-                    requires poly_eval(p_v0, env_v01) == 1int * poly_eval(p_fac, env_v01),
-                        poly_eval(p_fac, env_v01) != 0int;
-                //  Need: poly_eval(p, env_v01) = poly_eval(p_v0, env_v01) + S, S = 0.
-                //  This requires lemma_non_v0_eval_independent to show S is same at env_fac and env_v01.
-                //  At env_fac: S = poly_eval(p, env_fac) - poly_eval(p_v0, env_fac) = 0 - 0 = 0.
-                //  At env_v01: S = poly_eval(p, env_v01) - poly_eval(p_v0, env_v01).
-                //  By v0-independence: S_env_v01 = S_env_fac = 0.
-                //  So poly_eval(p, env_v01) = poly_eval(p_v0, env_v01) != 0.
-                //  poly_eval(p, env_v01) != 0 because:
-                //  poly_eval(p_v0, env_v01) = 1 * poly_eval(p_fac, env_v01) != 0
-                //  S (non-v0 terms) = 0 at env_fac and is v0-independent → 0 at env_v01 too.
-                //  So poly_eval(p, env_v01) = poly_eval(p_v0, env_v01) + 0 != 0.
-                //
-                //  Z3 can try to verify this directly:
-                assert(poly_eval(p_v0, env_v01) != 0int) by(nonlinear_arith)
-                    requires poly_eval(p_v0, env_v01) == 1int * poly_eval(p_fac, env_v01),
-                        poly_eval(p_fac, env_v01) != 0int;
-                //  For the full poly_eval(p, env_v01): it includes non-v0 terms too.
-                //  We'll check if Z3 can prove it != 0. If not, we need the v0-independence proof.
-                //  Use v0-independence to show S = 0 at env_v01.
-                //  Construct env_zero: same as env_v01 but with v0 = 0.
-                //  Then env_zero and env_v01 differ only at v0, have same length.
-                let env_zero = if (v0 as int) < env_v01.len() {
-                    env_v01.update(v0 as int, 0int)
-                } else { env_v01 };
-                assert(env_zero.len() == env_v01.len());
-                assert forall |i: int| 0 <= i < env_zero.len() && i != v0 as int
-                    implies env_zero[i] == env_v01[i] by {}
-                assert forall |i: int| 0 <= i < p.len() && p[i].1.len() > 0
-                    implies p[i].1[0] >= v0 by {
-                    if i > 0 {
-                        assert(vars_lt(p[0].1, p[i].1));
-                        if p[i].1[0] < v0 { lemma_vars_lt_asymm(p[0].1, p[i].1); }
-                    }
-                }
-                lemma_non_v0_eval_independent(p, env_zero, env_v01, v0);
-                //  S at env_zero == S at env_v01.
-                //  At env_zero: v0 = 0, so poly_eval(p_v0, env_zero) = 0.
-                lemma_poly_eval_factor(p_v0, env_zero, v0);
-                assert(poly_eval(p_v0, env_zero) == 0int) by(nonlinear_arith)
-                    requires poly_eval(p_v0, env_zero) == 0int * poly_eval(p_fac, env_zero);
-                //  S at env_zero = poly_eval(p, env_zero) - poly_eval(p_v0, env_zero)
-                //               = poly_eval(p, env_zero) - 0 = poly_eval(p, env_zero).
-                //  S at env_v01 = poly_eval(p, env_v01) - poly_eval(p_v0, env_v01).
-                //  By v0-independence: S_zero == S_v01.
-                //  poly_eval(p, env_zero) == poly_eval(p, env_v01) - poly_eval(p_v0, env_v01).
-                //
-                //  Also: at env_zero, p is evaluated with v0=0. Is poly_eval(p, env_zero) == 0?
-                //  We tried env2 = env_ih[v0:=0] earlier and it was 0. But env_zero is
-                //  env_v01[v0:=0] which may have different non-v0 values than env_ih.
-                //  So poly_eval(p, env_zero) might not be 0.
-                //
-                //  BUT: poly_eval(p, env_zero) = poly_eval(p_v0, env_zero) + S_zero = 0 + S_zero = S_zero.
-                //  And S_zero = S_v01. So poly_eval(p, env_v01) = poly_eval(p_v0, env_v01) + S_zero.
-                //  poly_eval(p_v0, env_v01) != 0 (proved above).
-                //  If S_zero == 0: poly_eval(p, env_v01) = poly_eval(p_v0, env_v01) != 0. DONE!
-                //  If S_zero != 0: poly_eval(p, env_zero) = S_zero != 0. ALSO DONE! (env_zero is witness)
-                //
-                //  In EITHER case, we have an env where poly_eval(p, ...) != 0!
-                if poly_eval(p, env_zero) != 0int {
-                    //  env_zero is our witness!
-                } else {
-                    //  poly_eval(p, env_zero) == 0 and poly_eval(p_v0, env_zero) == 0.
-                    //  By v0-independence:
-                    //  poly_eval(p, env_zero) - poly_eval(p_v0, env_zero)
-                    //  == poly_eval(p, env_v01) - poly_eval(p_v0, env_v01)
-                    //  0 - 0 == poly_eval(p, env_v01) - poly_eval(p_v0, env_v01)
-                    //  So poly_eval(p, env_v01) == poly_eval(p_v0, env_v01) != 0.
-                    //  p_v0 IS poly_filter_first_var(p, v0).
-                    //  v0-independence gives:
-                    //  poly_eval(p, env_zero) - poly_eval(p_v0, env_zero)
-                    //  == poly_eval(p, env_v01) - poly_eval(p_v0, env_v01)
-                    //  LHS = 0 - 0 = 0. So RHS = 0.
-                    //  poly_eval(p, env_v01) = poly_eval(p_v0, env_v01).
-                    assert(poly_eval(p, env_v01) - poly_eval(p_v0, env_v01) == 0int);
-                    assert(poly_eval(p, env_v01) == poly_eval(p_v0, env_v01));
+            let env0: Seq<int> = if (v0 as int) < env_fac.len() {
+                env_fac
+            } else {
+                lemma_poly_eval_zero_pad(p_fac, env_fac, new_len);
+                lemma_poly_eval_zero_pad(p, env_fac, new_len);
+                Seq::new(new_len, |i: int|
+                    if i < env_fac.len() { env_fac[i] } else { 0int })
+            };
+            assert((v0 as int) < env0.len());
+            assert(env0[v0 as int] == 0int);
+            assert(poly_eval(p_fac, env0) == a_val);
+            assert(poly_eval(p, env0) == 0int);
+
+            //  Apply modular congruence: poly_eval(p_fac, env0[v0:=r]) = A + r*Q.
+            let q_mod = lemma_poly_eval_mod_r(p_fac, env0, v0, r_val);
+            let env_r = env0.update(v0 as int, r_val);
+
+            //  Contradiction if poly_eval(p_fac, env_r) == 0:
+            //  A + r*Q == 0 → A = -r*Q.
+            //  If Q == 0: A == 0. Contradiction with A != 0.
+            //  If Q != 0: |A| = |r|*|Q| >= |r| = |A|+1 > |A|. Contradiction.
+            assert(poly_eval(p_fac, env_r) != 0int) by(nonlinear_arith)
+                requires
+                    poly_eval(p_fac, env_r) == a_val + r_val * q_mod,
+                    a_val != 0int,
+                    r_val == (if a_val >= 0int { a_val + 1 } else { -a_val + 1 });
+
+            //  r_val != 0 (r_val = |A| + 1 >= 2).
+            assert(r_val != 0int) by(nonlinear_arith)
+                requires a_val != 0int,
+                    r_val == (if a_val >= 0int { a_val + 1 } else { -a_val + 1 });
+
+            //  Factoring: poly_eval(p_v0, env_r) = r * poly_eval(p_fac, env_r) != 0.
+            lemma_poly_eval_factor(p_v0, env_r, v0);
+            assert(poly_eval(p_v0, env_r) != 0int) by(nonlinear_arith)
+                requires
+                    poly_eval(p_v0, env_r) == r_val * poly_eval(p_fac, env_r),
+                    r_val != 0int,
+                    poly_eval(p_fac, env_r) != 0int;
+
+            //  v0-independence: S at env0 == S at env_r.
+            //  At env0 (v0=0): poly_eval(p_v0, env0) = 0 * ... = 0.
+            //  S_env0 = poly_eval(p, env0) - poly_eval(p_v0, env0) = 0 - 0 = 0.
+            //  So S_env_r = 0, meaning poly_eval(p, env_r) = poly_eval(p_v0, env_r) != 0.
+            lemma_poly_eval_factor(p_v0, env0, v0);
+            assert(poly_eval(p_v0, env0) == 0int) by(nonlinear_arith)
+                requires poly_eval(p_v0, env0) == 0int * poly_eval(p_fac, env0);
+
+            assert(env_r.len() == env0.len());
+            assert forall |i: int| 0 <= i < env0.len() && i != v0 as int
+                implies env_r[i] == env0[i] by {}
+            assert forall |i: int| 0 <= i < p.len() && p[i].1.len() > 0
+                implies p[i].1[0] >= v0 by {
+                if i > 0 {
+                    assert(vars_lt(p[0].1, p[i].1));
+                    if p[i].1[0] < v0 { lemma_vars_lt_asymm(p[0].1, p[i].1); }
                 }
             }
+            lemma_non_v0_eval_independent(p, env0, env_r, v0);
+            //  poly_eval(p, env_r) - poly_eval(p_v0, env_r)
+            //  == poly_eval(p, env0) - poly_eval(p_v0, env0) == 0 - 0 == 0
+            assert(poly_eval(p, env_r) == poly_eval(p_v0, env_r));
+            assert(poly_eval(p, env_r) != 0int);
         }
     }
 }
