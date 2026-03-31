@@ -1479,7 +1479,7 @@ proof fn lemma_vars_sorted_mono_mul(c: int, vars: Seq<nat>, q: Seq<(int, Seq<nat
 ///  poly_insert preserves poly_vars_sorted when the inserted term has sorted vars.
 proof fn lemma_vars_sorted_insert(c: int, v: Seq<nat>, p: Seq<(int, Seq<nat>)>)
     requires poly_vars_sorted(p),
-        forall |j: int| 0 <= j < v.len() ==> (j > 0 ==> v[j-1] <= v[j]),
+        forall |j: int| #![trigger v[j]] 0 < j < v.len() ==> v[j-1] <= v[j],
     ensures poly_vars_sorted(poly_insert(c, v, p)),
     decreases p.len(),
 {
@@ -1491,16 +1491,16 @@ proof fn lemma_vars_sorted_insert(c: int, v: Seq<nat>, p: Seq<(int, Seq<nat>)>)
     } else if vars_lt(v, p[0].1) {
         //  Prepend (c, v) to p. Both have sorted vars.
         let r = seq![(c, v)] + p;
-        assert forall |i: int, j: int| 0 <= i < r.len() && 0 <= j < r[i].1.len()
-            implies (j > 0 ==> r[i].1[j-1] <= r[i].1[j]) by {
+        assert forall |i: int, j: int| #![trigger r[i].1[j]] 0 <= i < r.len() && 0 < j < r[i].1.len()
+            implies r[i].1[j-1] <= r[i].1[j] by {
             if i == 0 {} else { assert(r[i] == p[i-1]); }
         }
     } else {
         lemma_vars_sorted_insert(c, v, pt);
         let ins = poly_insert(c, v, pt);
         let r = seq![p[0]] + ins;
-        assert forall |i: int, j: int| 0 <= i < r.len() && 0 <= j < r[i].1.len()
-            implies (j > 0 ==> r[i].1[j-1] <= r[i].1[j]) by {
+        assert forall |i: int, j: int| #![trigger r[i].1[j]] 0 <= i < r.len() && 0 < j < r[i].1.len()
+            implies r[i].1[j-1] <= r[i].1[j] by {
             if i == 0 {} else { assert(r[i] == ins[i-1]); }
         }
     }
@@ -1509,18 +1509,18 @@ proof fn lemma_vars_sorted_insert(c: int, v: Seq<nat>, p: Seq<(int, Seq<nat>)>)
 ///  vars_merge produces sorted output from sorted inputs.
 proof fn lemma_vars_merge_sorted(a: Seq<nat>, b: Seq<nat>)
     requires
-        forall |j: int| 0 <= j < a.len() ==> (j > 0 ==> a[j-1] <= a[j]),
-        forall |j: int| 0 <= j < b.len() ==> (j > 0 ==> b[j-1] <= b[j]),
+        forall |j: int| #![trigger a[j]] 0 < j < a.len() ==> a[j-1] <= a[j],
+        forall |j: int| #![trigger b[j]] 0 < j < b.len() ==> b[j-1] <= b[j],
     ensures ({
         let m = vars_merge(a, b);
-        forall |j: int| 0 <= j < m.len() ==> (j > 0 ==> m[j-1] <= m[j])
+        forall |j: int| #![trigger m[j]] 0 < j < m.len() ==> m[j-1] <= m[j]
     }),
     decreases a.len() + b.len(),
 {
     if a.len() == 0 || b.len() == 0 { return; }
     if a[0] <= b[0] {
         let at = a.subrange(1, a.len() as int);
-        assert forall |j: int| 0 <= j < at.len() implies (j > 0 ==> at[j-1] <= at[j]) by {
+        assert forall |j: int| #![trigger at[j]] 0 < j < at.len() implies at[j-1] <= at[j] by {
             assert(at[j] == a[j+1]);
             if j > 0 { assert(at[j-1] == a[j]); }
         }
@@ -1530,7 +1530,7 @@ proof fn lemma_vars_merge_sorted(a: Seq<nat>, b: Seq<nat>)
         assert(m =~= seq![a[0]] + mt);
     } else {
         let bt = b.subrange(1, b.len() as int);
-        assert forall |j: int| 0 <= j < bt.len() implies (j > 0 ==> bt[j-1] <= bt[j]) by {
+        assert forall |j: int| #![trigger bt[j]] 0 < j < bt.len() implies bt[j-1] <= bt[j] by {
             assert(bt[j] == b[j+1]);
             if j > 0 { assert(bt[j-1] == b[j]); }
         }
@@ -2772,8 +2772,8 @@ proof fn lemma_vars_sorted_neg(p: Seq<(int, Seq<nat>)>)
     lemma_vars_sorted_neg(pt);
     lemma_poly_neg_len(p);
     let np = poly_neg(p);
-    assert forall |i: int, j: int| 0 <= i < np.len() && 0 <= j < np[i].1.len()
-        implies (j > 0 ==> np[i].1[j-1] <= np[i].1[j]) by {
+    assert forall |i: int, j: int| #![trigger np[i].1[j]] 0 <= i < np.len() && 0 < j < np[i].1.len()
+        implies np[i].1[j-1] <= np[i].1[j] by {
         lemma_poly_neg_index(p, i);
         //  np[i] = (-p[i].0, p[i].1). So np[i].1 = p[i].1.
     }
@@ -2797,8 +2797,8 @@ proof fn lemma_vars_sorted_add(
         let c = p[0].0 + q[0].0;
         if c != 0int {
             let r = seq![(c, p[0].1)] + poly_add(pt, qt);
-            assert forall |i: int, j: int| 0 <= i < r.len() && 0 <= j < r[i].1.len()
-                implies (j > 0 ==> r[i].1[j-1] <= r[i].1[j]) by {
+            assert forall |i: int, j: int| #![trigger r[i].1[j]] 0 <= i < r.len() && 0 < j < r[i].1.len()
+                implies r[i].1[j-1] <= r[i].1[j] by {
                 if i == 0 {
                     //  r[0].1 = p[0].1 — sorted by poly_vars_sorted(p)
                 } else {
@@ -2809,15 +2809,15 @@ proof fn lemma_vars_sorted_add(
     } else if vars_lt(p[0].1, q[0].1) {
         lemma_vars_sorted_add(pt, q);
         let r = seq![p[0]] + poly_add(pt, q);
-        assert forall |i: int, j: int| 0 <= i < r.len() && 0 <= j < r[i].1.len()
-            implies (j > 0 ==> r[i].1[j-1] <= r[i].1[j]) by {
+        assert forall |i: int, j: int| #![trigger r[i].1[j]] 0 <= i < r.len() && 0 < j < r[i].1.len()
+            implies r[i].1[j-1] <= r[i].1[j] by {
             if i == 0 {} else { assert(r[i] == poly_add(pt, q)[i-1]); }
         }
     } else {
         lemma_vars_sorted_add(p, qt);
         let r = seq![q[0]] + poly_add(p, qt);
-        assert forall |i: int, j: int| 0 <= i < r.len() && 0 <= j < r[i].1.len()
-            implies (j > 0 ==> r[i].1[j-1] <= r[i].1[j]) by {
+        assert forall |i: int, j: int| #![trigger r[i].1[j]] 0 <= i < r.len() && 0 < j < r[i].1.len()
+            implies r[i].1[j-1] <= r[i].1[j] by {
             if i == 0 {} else { assert(r[i] == poly_add(p, qt)[i-1]); }
         }
     }
@@ -2849,8 +2849,8 @@ proof fn lemma_vars_sorted_filter(p: Seq<(int, Seq<nat>)>, v0: nat)
     if p[0].1.len() > 0 && p[0].1[0] == v0 {
         let ft = poly_filter_first_var(pt, v0);
         let result = seq![p[0]] + ft;
-        assert forall |i: int, j: int| 0 <= i < result.len() && 0 <= j < result[i].1.len()
-            implies (j > 0 ==> result[i].1[j-1] <= result[i].1[j]) by {
+        assert forall |i: int, j: int| #![trigger result[i].1[j]] 0 <= i < result.len() && 0 < j < result[i].1.len()
+            implies result[i].1[j-1] <= result[i].1[j] by {
             if i == 0 {} else { assert(result[i] == ft[i-1]); }
         }
     }
@@ -2873,8 +2873,8 @@ proof fn lemma_vars_sorted_factor(p: Seq<(int, Seq<nat>)>)
     let pft = poly_factor_out_first_var(pt);
     lemma_poly_factor_len(p);
     assert(pf =~= seq![(p[0].0, p[0].1.subrange(1, p[0].1.len() as int))] + pft);
-    assert forall |i: int, j: int| 0 <= i < pf.len() && 0 <= j < pf[i].1.len()
-        implies (j > 0 ==> pf[i].1[j-1] <= pf[i].1[j]) by {
+    assert forall |i: int, j: int| #![trigger pf[i].1[j]] 0 <= i < pf.len() && 0 < j < pf[i].1.len()
+        implies pf[i].1[j-1] <= pf[i].1[j] by {
         if i == 0 {
             //  pf[0].1 = p[0].1[1:]. If j > 0: pf[0].1[j-1] = p[0].1[j], pf[0].1[j] = p[0].1[j+1].
             //  By poly_vars_sorted(p): p[0].1[j] <= p[0].1[j+1]. ✓
@@ -2890,7 +2890,7 @@ proof fn lemma_vars_sorted_factor(p: Seq<(int, Seq<nat>)>)
 proof fn lemma_sorted_vars_no_v0(vars: Seq<nat>, v0: nat)
     requires
         vars.len() > 0, vars[0] > v0,
-        forall |j: int| 0 <= j < vars.len() ==> (j > 0 ==> vars[j-1] <= vars[j]),
+        forall |j: int| #![trigger vars[j]] 0 < j < vars.len() ==> vars[j-1] <= vars[j],
     ensures forall |j: int| 0 <= j < vars.len() ==> vars[j] != v0,
 {
     assert forall |j: int| 0 <= j < vars.len() implies vars[j] != v0 by {
