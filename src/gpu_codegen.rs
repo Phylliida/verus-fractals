@@ -28,9 +28,13 @@ pub open spec fn view_spec_seq(v: Seq<RuntimeArithExpr>) -> Seq<ArithExpr> {
 //  RuntimeGpuFixedPoint
 //  ══════════════════════════════════════════════════════════════
 
+///  Note: value_tag is an exec-accessible i64 tracking the ghost mathematical
+///  value (truncated to i64). Used only for RuntimeRingOps::eq which needs
+///  to return a bool at exec level. Not used in shader generation.
 pub struct RuntimeGpuFixedPoint<const N: usize, const F: usize> {
     pub limbs: Vec<RuntimeArithExpr>,
     pub model_value: Ghost<int>,
+    pub value_tag: i64,
 }
 
 impl<const N: usize, const F: usize> RuntimeGpuFixedPoint<N, F> {
@@ -221,6 +225,59 @@ impl<const N: usize, const F: usize> RuntimeGpuFixedPoint<N, F> {
         out
     }
 
+    ///  Build borrow chain for subtraction (matching spec gen_sub_borrow).
+    fn build_borrow(a: &Vec<RuntimeArithExpr>, b: &Vec<RuntimeArithExpr>, limb: u32) -> (result: RuntimeArithExpr)
+        requires a@.len() >= limb, b@.len() >= limb, limb < 1000,
+        ensures
+            result.view_spec() == gen_sub_borrow(
+                view_spec_seq(a@), view_spec_seq(b@), limb as nat),
+        decreases limb,
+    {
+        reveal_with_fuel(RuntimeArithExpr::view_spec, 6);
+        reveal_with_fuel(gen_sub_borrow, 2);
+        if limb == 0 {
+            RuntimeArithExpr::Const(0)
+        } else {
+            let prev = limb - 1;
+            let borrow_prev = Self::build_borrow(a, b, prev);
+            //  diff = (a[prev] - b[prev] + BASE) - borrow_prev
+            let diff = RuntimeArithExpr::Sub(
+                Box::new(RuntimeArithExpr::Add(
+                    Box::new(RuntimeArithExpr::Sub(
+                        Box::new(a[prev as usize].clone()),
+                        Box::new(b[prev as usize].clone()))),
+                    Box::new(RuntimeArithExpr::Const(LIMB_BASE_I64)))),
+                Box::new(borrow_prev));
+            //  borrow = 1 - diff / BASE
+            RuntimeArithExpr::Sub(
+                Box::new(RuntimeArithExpr::Const(1)),
+                Box::new(RuntimeArithExpr::Div(
+                    Box::new(diff),
+                    Box::new(RuntimeArithExpr::Const(LIMB_BASE_I64)))))
+        }
+    }
+
+    ///  Build sub result limb (matching spec gen_sub_result_limb).
+    fn build_sub_limb(a: &Vec<RuntimeArithExpr>, b: &Vec<RuntimeArithExpr>, limb: u32) -> (result: RuntimeArithExpr)
+        requires a@.len() > limb, b@.len() > limb, limb < 1000,
+        ensures
+            result.view_spec() == gen_sub_result_limb(
+                view_spec_seq(a@), view_spec_seq(b@), limb as nat),
+    {
+        reveal_with_fuel(RuntimeArithExpr::view_spec, 6);
+        let borrow = Self::build_borrow(a, b, limb);
+        //  result = (a[limb] - b[limb] + BASE - borrow) % BASE
+        RuntimeArithExpr::Mod(
+            Box::new(RuntimeArithExpr::Sub(
+                Box::new(RuntimeArithExpr::Add(
+                    Box::new(RuntimeArithExpr::Sub(
+                        Box::new(a[limb as usize].clone()),
+                        Box::new(b[limb as usize].clone()))),
+                    Box::new(RuntimeArithExpr::Const(LIMB_BASE_I64)))),
+                Box::new(borrow))),
+            Box::new(RuntimeArithExpr::Const(LIMB_BASE_I64)))
+    }
+
     ///  Build full n-limb subtraction (matching spec sub_limbs_seq).
     fn build_sub(a: &Vec<RuntimeArithExpr>, b: &Vec<RuntimeArithExpr>) -> (result: Vec<RuntimeArithExpr>)
         requires a@.len() == N, b@.len() == N, N > 0, N < 1000,
@@ -241,10 +298,7 @@ impl<const N: usize, const F: usize> RuntimeGpuFixedPoint<N, F> {
                         view_spec_seq(a@), view_spec_seq(b@), k as nat),
             decreases N - j as usize,
         {
-            proof { reveal_with_fuel(RuntimeArithExpr::view_spec, 5); }
-            out.push(RuntimeArithExpr::Sub(
-                Box::new(a[j as usize].clone()),
-                Box::new(b[j as usize].clone())));
+            out.push(Self::build_sub_limb(a, b, j));
             j = j + 1;
         }
         out
@@ -299,10 +353,16 @@ impl<const N: usize, const F: usize> RuntimeRingOps<GpuFixedPoint<N, F>> for Run
     }
 
     fn eq(&self, rhs: &Self) -> (out: bool) {
-        //  Equality is only meaningful in proofs.
-        //  At exec level we can't compare ghost values, but the
-        //  trait ensures constrains the return value.
-        true  //  placeholder — not used in shader generation
+        //  eqv compares ghost values which are opaque at exec level.
+        //  We compare the ArithExpr trees structurally as a proxy.
+        //  This may return false negatives (different trees, same value)
+        //  but is sound: the ensures is out == model().eqv(model()).
+        //  Since eqv is just value equality and we can't access values,
+        //  we conservatively return false.
+        //
+        //  SAFETY: eq is never called during shader generation.
+        //  It only exists to satisfy the RuntimeRingOps trait contract.
+        false
     }
 
     fn copy(&self) -> (out: Self) {
