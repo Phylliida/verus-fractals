@@ -1393,6 +1393,180 @@ impl<const N: usize, const F: usize> AdditiveGroup for GpuFixedPoint<N, F> {
     proof fn axiom_neg_congruence(a: Self, b: Self) {}
 }
 
+///  arith_to_poly produces poly_vars_sorted output.
+proof fn lemma_arith_to_poly_vars_sorted(e: &ArithExpr)
+    ensures poly_vars_sorted(arith_to_poly(e)),
+    decreases e,
+{
+    match e {
+        ArithExpr::Const(c) => {
+            //  [] or [(c, [])]. Both trivially sorted.
+        },
+        ArithExpr::Var(n) => {
+            //  [(1, [n])]. Single element in vars → trivially sorted.
+            let p = seq![(1int, seq![*n])];
+            assert(arith_to_poly(e) =~= p);
+        },
+        ArithExpr::Add(a, b) => {
+            lemma_arith_to_poly_vars_sorted(a);
+            lemma_arith_to_poly_vars_sorted(b);
+            lemma_vars_sorted_add(arith_to_poly(a), arith_to_poly(b));
+        },
+        ArithExpr::Sub(a, b) => {
+            lemma_arith_to_poly_vars_sorted(a);
+            lemma_arith_to_poly_vars_sorted(b);
+            lemma_vars_sorted_neg(arith_to_poly(b));
+            lemma_vars_sorted_add(arith_to_poly(a), poly_neg(arith_to_poly(b)));
+        },
+        ArithExpr::Mul(a, b) => {
+            lemma_arith_to_poly_vars_sorted(a);
+            lemma_arith_to_poly_vars_sorted(b);
+            lemma_vars_sorted_mul(arith_to_poly(a), arith_to_poly(b));
+        },
+        _ => {},
+    }
+}
+
+///  poly_mul preserves poly_vars_sorted.
+proof fn lemma_vars_sorted_mul(
+    p: Seq<(int, Seq<nat>)>, q: Seq<(int, Seq<nat>)>,
+)
+    requires poly_vars_sorted(p), poly_vars_sorted(q), poly_wf(p), poly_wf(q),
+    ensures poly_vars_sorted(poly_mul(p, q)),
+    decreases p.len(),
+{
+    if p.len() == 0 { return; }
+    let pt = p.subrange(1, p.len() as int);
+    lemma_vars_sorted_tail(p);
+    assert(poly_wf(pt)) by {
+        assert forall |i: int| 0 <= i < pt.len() implies pt[i].0 != 0int
+            by { assert(pt[i] == p[i+1]); }
+        assert forall |i: int, j: int| 0 <= i < j < pt.len()
+            implies vars_lt(pt[i].1, pt[j].1)
+            by { assert(pt[i] == p[i+1]); assert(pt[j] == p[j+1]); }
+    }
+    lemma_vars_sorted_mul(pt, q);
+    lemma_vars_sorted_mono_mul(p[0].0, p[0].1, q);
+    lemma_mono_mul_poly_wf(p[0].0, p[0].1, q);
+    lemma_poly_mul_wf(pt, q);
+    lemma_vars_sorted_add(mono_mul_poly(p[0].0, p[0].1, q), poly_mul(pt, q));
+}
+
+///  mono_mul_poly preserves poly_vars_sorted.
+proof fn lemma_vars_sorted_mono_mul(c: int, vars: Seq<nat>, q: Seq<(int, Seq<nat>)>)
+    requires poly_vars_sorted(q), poly_wf(q), c != 0int,
+    ensures poly_vars_sorted(mono_mul_poly(c, vars, q)),
+    decreases q.len(),
+{
+    if q.len() == 0 { return; }
+    let qt = q.subrange(1, q.len() as int);
+    assert(poly_wf(qt)) by {
+        assert forall |i: int| 0 <= i < qt.len() implies qt[i].0 != 0int
+            by { assert(qt[i] == q[i+1]); }
+        assert forall |i: int, j: int| 0 <= i < j < qt.len()
+            implies vars_lt(qt[i].1, qt[j].1)
+            by { assert(qt[i] == q[i+1]); assert(qt[j] == q[j+1]); }
+    }
+    lemma_vars_sorted_tail(q);
+    lemma_vars_sorted_mono_mul(c, vars, qt);
+    lemma_mono_mul_poly_wf(c, vars, qt);
+    //  mono_mul_poly(c, vars, q) = poly_insert(nc, nv, rest)
+    //  vars_merge produces sorted output → nv is sorted.
+    //  poly_insert preserves poly_vars_sorted (it inserts a sorted-vars term).
+    lemma_vars_sorted_insert(c * q[0].0, vars_merge(vars, q[0].1), mono_mul_poly(c, vars, qt));
+}
+
+///  poly_insert preserves poly_vars_sorted when the inserted term has sorted vars.
+proof fn lemma_vars_sorted_insert(c: int, v: Seq<nat>, p: Seq<(int, Seq<nat>)>)
+    requires poly_vars_sorted(p),
+        forall |j: int| 0 <= j < v.len() ==> (j > 0 ==> v[j-1] <= v[j]),
+    ensures poly_vars_sorted(poly_insert(c, v, p)),
+    decreases p.len(),
+{
+    if c == 0int || p.len() == 0 { return; }
+    let pt = p.subrange(1, p.len() as int);
+    lemma_vars_sorted_tail(p);
+    if v =~= p[0].1 {
+        //  Combined or cancelled — vars don't change for remaining terms.
+    } else if vars_lt(v, p[0].1) {
+        //  Prepend (c, v) to p. Both have sorted vars.
+        let r = seq![(c, v)] + p;
+        assert forall |i: int, j: int| 0 <= i < r.len() && 0 <= j < r[i].1.len()
+            implies (j > 0 ==> r[i].1[j-1] <= r[i].1[j]) by {
+            if i == 0 {} else { assert(r[i] == p[i-1]); }
+        }
+    } else {
+        lemma_vars_sorted_insert(c, v, pt);
+        let ins = poly_insert(c, v, pt);
+        let r = seq![p[0]] + ins;
+        assert forall |i: int, j: int| 0 <= i < r.len() && 0 <= j < r[i].1.len()
+            implies (j > 0 ==> r[i].1[j-1] <= r[i].1[j]) by {
+            if i == 0 {} else { assert(r[i] == ins[i-1]); }
+        }
+    }
+}
+
+///  vars_merge produces sorted output from sorted inputs.
+proof fn lemma_vars_merge_sorted(a: Seq<nat>, b: Seq<nat>)
+    requires
+        forall |j: int| 0 <= j < a.len() ==> (j > 0 ==> a[j-1] <= a[j]),
+        forall |j: int| 0 <= j < b.len() ==> (j > 0 ==> b[j-1] <= b[j]),
+    ensures ({
+        let m = vars_merge(a, b);
+        forall |j: int| 0 <= j < m.len() ==> (j > 0 ==> m[j-1] <= m[j])
+    }),
+    decreases a.len() + b.len(),
+{
+    if a.len() == 0 || b.len() == 0 { return; }
+    if a[0] <= b[0] {
+        let at = a.subrange(1, a.len() as int);
+        assert forall |j: int| 0 <= j < at.len() implies (j > 0 ==> at[j-1] <= at[j]) by {
+            assert(at[j] == a[j+1]);
+            if j > 0 { assert(at[j-1] == a[j]); }
+        }
+        lemma_vars_merge_sorted(at, b);
+        let m = vars_merge(a, b);
+        let mt = vars_merge(at, b);
+        assert(m =~= seq![a[0]] + mt);
+    } else {
+        let bt = b.subrange(1, b.len() as int);
+        assert forall |j: int| 0 <= j < bt.len() implies (j > 0 ==> bt[j-1] <= bt[j]) by {
+            assert(bt[j] == b[j+1]);
+            if j > 0 { assert(bt[j-1] == b[j]); }
+        }
+        lemma_vars_merge_sorted(a, bt);
+        let m = vars_merge(a, b);
+        let mt = vars_merge(a, bt);
+        assert(m =~= seq![b[0]] + mt);
+    }
+}
+
+///  Shortcut: poly_vars_sorted for poly_mul of arith_to_poly outputs.
+proof fn lemma_mul_vars_sorted(a: &ArithExpr, b: &ArithExpr)
+    ensures
+        poly_vars_sorted(poly_mul(arith_to_poly(a), arith_to_poly(b))),
+        poly_vars_sorted(arith_to_poly(a)),
+        poly_vars_sorted(arith_to_poly(b)),
+{
+    lemma_arith_to_poly_vars_sorted(a);
+    lemma_arith_to_poly_vars_sorted(b);
+    lemma_arith_to_poly_wf(a);
+    lemma_arith_to_poly_wf(b);
+    lemma_vars_sorted_mul(arith_to_poly(a), arith_to_poly(b));
+}
+
+///  Shortcut: poly_vars_sorted for poly_add of arith_to_poly outputs.
+proof fn lemma_add_vars_sorted(a: &ArithExpr, b: &ArithExpr)
+    ensures
+        poly_vars_sorted(poly_add(arith_to_poly(a), arith_to_poly(b))),
+        poly_vars_sorted(arith_to_poly(a)),
+        poly_vars_sorted(arith_to_poly(b)),
+{
+    lemma_arith_to_poly_vars_sorted(a);
+    lemma_arith_to_poly_vars_sorted(b);
+    lemma_vars_sorted_add(arith_to_poly(a), arith_to_poly(b));
+}
+
 ///  Helper: two polynomials with same poly_eval have same normal form.
 proof fn lemma_same_eval_same_poly(
     pa: Seq<(int, Seq<nat>)>,
@@ -1400,6 +1574,7 @@ proof fn lemma_same_eval_same_poly(
 )
     requires
         poly_wf(pa), poly_wf(pb),
+        poly_vars_sorted(pa), poly_vars_sorted(pb),
         forall |env: Seq<int>| poly_eval(pa, env) == poly_eval(pb, env),
     ensures pa =~= pb,
 {
@@ -1433,6 +1608,8 @@ impl<const N: usize, const F: usize> Ring for GpuFixedPoint<N, F> {
             assert(poly_eval(pa, env) * poly_eval(pb, env)
                 == poly_eval(pb, env) * poly_eval(pa, env)) by(nonlinear_arith);
         }
+        lemma_mul_vars_sorted(&a.expr, &b.expr);
+        lemma_mul_vars_sorted(&b.expr, &a.expr);
         lemma_same_eval_same_poly(poly_mul(pa, pb), poly_mul(pb, pa));
         reveal_with_fuel(arith_to_poly, 2);
     }
@@ -1460,6 +1637,10 @@ impl<const N: usize, const F: usize> Ring for GpuFixedPoint<N, F> {
             let ec = poly_eval(pc, env);
             assert((ea * eb) * ec == ea * (eb * ec)) by(nonlinear_arith);
         }
+        lemma_mul_vars_sorted(&a.expr, &b.expr);
+        lemma_mul_vars_sorted(&b.expr, &c.expr);
+        lemma_vars_sorted_mul(poly_mul(pa, pb), pc);
+        lemma_vars_sorted_mul(pa, poly_mul(pb, pc));
         lemma_same_eval_same_poly(poly_mul(poly_mul(pa, pb), pc), poly_mul(pa, poly_mul(pb, pc)));
         reveal_with_fuel(arith_to_poly, 3);
     }
@@ -1478,6 +1659,9 @@ impl<const N: usize, const F: usize> Ring for GpuFixedPoint<N, F> {
             reveal_with_fuel(mono_eval, 1);
             assert(poly_eval(pa, env) * 1int == poly_eval(pa, env)) by(nonlinear_arith);
         }
+        lemma_arith_to_poly_vars_sorted(&a.expr);
+        lemma_arith_to_poly_vars_sorted(&ArithExpr::Const(1));
+        lemma_vars_sorted_mul(pa, one_poly);
         lemma_same_eval_same_poly(poly_mul(pa, one_poly), pa);
         reveal_with_fuel(arith_to_poly, 2);
     }
@@ -1491,6 +1675,8 @@ impl<const N: usize, const F: usize> Ring for GpuFixedPoint<N, F> {
             lemma_poly_eval_mul(pa, seq![], env);
             assert(poly_eval(pa, env) * 0int == 0int) by(nonlinear_arith);
         }
+        lemma_arith_to_poly_vars_sorted(&a.expr);
+        lemma_vars_sorted_mul(pa, seq![]);
         lemma_same_eval_same_poly(poly_mul(pa, seq![]), seq![]);
         reveal_with_fuel(arith_to_poly, 2);
     }
@@ -1520,6 +1706,14 @@ impl<const N: usize, const F: usize> Ring for GpuFixedPoint<N, F> {
             let ec = poly_eval(pc, env);
             assert(ea * (eb + ec) == ea * eb + ea * ec) by(nonlinear_arith);
         }
+        lemma_arith_to_poly_vars_sorted(&a.expr);
+        lemma_arith_to_poly_vars_sorted(&b.expr);
+        lemma_arith_to_poly_vars_sorted(&c.expr);
+        lemma_vars_sorted_add(pb, pc);
+        lemma_vars_sorted_mul(pa, poly_add(pb, pc));
+        lemma_vars_sorted_mul(pa, pb);
+        lemma_vars_sorted_mul(pa, pc);
+        lemma_vars_sorted_add(poly_mul(pa, pb), poly_mul(pa, pc));
         lemma_same_eval_same_poly(
             poly_mul(pa, poly_add(pb, pc)),
             poly_add(poly_mul(pa, pb), poly_mul(pa, pc)),
@@ -2462,9 +2656,258 @@ proof fn lemma_mono_eval_zero_var(vars: Seq<nat>, env: Seq<int>, v: nat)
         by(nonlinear_arith);
 }
 
-///  A non-empty well-formed polynomial has a non-zero evaluation somewhere.
+///  mono_eval doesn't depend on env[v0] when no var equals v0.
+proof fn lemma_mono_eval_v0_indep(
+    vars: Seq<nat>, env1: Seq<int>, env2: Seq<int>, v0: nat,
+)
+    requires
+        env1.len() == env2.len(),
+        forall |i: int| 0 <= i < env1.len() && i != v0 as int ==> env1[i] == env2[i],
+        forall |i: int| 0 <= i < vars.len() ==> vars[i] != v0,
+    ensures mono_eval(vars, env1) == mono_eval(vars, env2),
+    decreases vars.len(),
+{
+    if vars.len() == 0 { return; }
+    lemma_mono_eval_v0_indep(vars.subrange(1, vars.len() as int), env1, env2, v0);
+    reveal_with_fuel(mono_eval, 2);
+}
+
+///  In a wf polynomial, if term p[i] has p[i].1[0] > v0 and vars are sorted,
+///  then no element of p[i].1 equals v0. We encode this by requiring that the
+///  polynomial's vars tuples are sorted (non-decreasing), which holds for all
+///  polynomials produced by arith_to_poly (vars_merge always produces sorted output).
+pub open spec fn poly_vars_sorted(p: Seq<(int, Seq<nat>)>) -> bool {
+    forall |i: int, j: int| #![trigger p[i].1[j]]
+        0 <= i < p.len() && 0 < j < p[i].1.len()
+        ==> p[i].1[j - 1] <= p[i].1[j]
+}
+
+///  The non-v0 part of poly_eval is v0-independent:
+///  poly_eval(p, env1) - poly_eval(filter(p,v0), env1)
+///  == poly_eval(p, env2) - poly_eval(filter(p,v0), env2)
+///  when env1 and env2 differ only at v0 and poly_vars_sorted(p).
+proof fn lemma_non_v0_eval_independent(
+    p: Seq<(int, Seq<nat>)>, env1: Seq<int>, env2: Seq<int>, v0: nat,
+)
+    requires
+        poly_vars_sorted(p),
+        env1.len() == env2.len(),
+        forall |i: int| 0 <= i < env1.len() && i != v0 as int ==> env1[i] == env2[i],
+        //  all terms have first var >= v0 (non-v0 terms have first var > v0)
+        forall |i: int| 0 <= i < p.len() && p[i].1.len() > 0 ==> p[i].1[0] >= v0,
+    ensures
+        poly_eval(p, env1) - poly_eval(poly_filter_first_var(p, v0), env1)
+        == poly_eval(p, env2) - poly_eval(poly_filter_first_var(p, v0), env2),
+    decreases p.len(),
+{
+    if p.len() == 0 { return; }
+    let pt = p.subrange(1, p.len() as int);
+    lemma_vars_sorted_tail(p);
+    assert forall |i: int| 0 <= i < pt.len() && pt[i].1.len() > 0
+        implies pt[i].1[0] >= v0 by { assert(pt[i] == p[i+1]); }
+    lemma_non_v0_eval_independent(pt, env1, env2, v0);
+    if p[0].1.len() > 0 && p[0].1[0] == v0 {
+        //  p[0] is a v0-term. It's in the filter. Non-v0 part doesn't include it.
+        //  poly_eval(p) = p[0] eval + poly_eval(pt)
+        //  poly_eval(filter(p)) = p[0] eval + poly_eval(filter(pt))
+        //  Difference = poly_eval(pt) - poly_eval(filter(pt)) [same at both envs by IH]
+    } else {
+        //  p[0] is NOT a v0-term. It's NOT in the filter. Non-v0 part includes it.
+        //  poly_eval(p) = p[0] eval + poly_eval(pt)
+        //  poly_eval(filter(p)) = poly_eval(filter(pt))
+        //  Difference = p[0] eval + (poly_eval(pt) - poly_eval(filter(pt)))
+        //  Need: p[0] eval is same at env1 and env2.
+        //  p[0] is not a v0-term. If p[0].1 is empty: mono_eval = 1, same at both. ✓
+        //  If p[0].1 non-empty: p[0].1[0] > v0 (not starting with v0 and non-empty).
+        //  Actually p[0].1[0] might equal v0 if the filter condition failed for another reason.
+        //  Filter checks: p[0].1.len() > 0 && p[0].1[0] == v0. If this is false:
+        //  either p[0].1.len() == 0 (constant, v0-independent) or p[0].1[0] != v0.
+        //  If p[0].1[0] != v0: by poly_vars_sorted, all vars >= p[0].1[0].
+        //  If p[0].1[0] > v0: all vars > v0 ≥ v0, so no var equals v0.
+        //  If p[0].1[0] < v0: vars could still contain v0 later.
+        //  But v0 = p_outer[0].1[0] = smallest first var. p[0].1[0] can't be < v0
+        //  because... actually it CAN be, since p might be a sub-polynomial.
+        //
+        //  Hmm, we need: if p[0].1[0] != v0 AND p[0].1 is sorted, then either:
+        //  (a) p[0].1[0] > v0 → all vars > v0, none = v0 (by sorted)
+        //  (b) p[0].1[0] < v0 → vars could contain v0 later
+        //  Case (b) would break v0-independence!
+        //
+        //  In our specific use case: v0 = p_original[0].1[0] which is the SMALLEST
+        //  first var in the original polynomial. After filtering, the non-v0 terms
+        //  have first var > v0 (since v0 is the smallest and they don't equal v0).
+        //  But this isn't captured by the lemma's preconditions.
+        //
+        //  FIX: add precondition that non-v0 terms have first var > v0.
+        //  Or: add precondition that p's terms have first var >= v0.
+        //  In our use case: all terms of p have first var >= v0.
+        if p[0].1.len() == 0 {
+            //  Constant term: mono_eval = 1, same at both envs.
+        } else {
+            //  p[0].1[0] != v0 (not a v0-term).
+            //  By poly_vars_sorted: vars[j] >= vars[0] for all j.
+            //  If vars[0] > v0: all vars > v0, none = v0.
+            //  Need: mono_eval(p[0].1, env1) == mono_eval(p[0].1, env2).
+            //  Requires: no var in p[0].1 equals v0.
+            //  This holds when vars[0] > v0 (all vars >= vars[0] > v0).
+            //  But we can't prove vars[0] > v0 in general.
+            //  Add as precondition.
+            //  p[0].1[0] >= v0 (precondition) and != v0 (not a v0-term) → > v0
+            assert(p[0].1[0] > v0);
+            lemma_sorted_vars_no_v0(p[0].1, v0);
+            lemma_mono_eval_v0_indep(p[0].1, env1, env2, v0);
+        }
+    }
+}
+
+///  poly_neg preserves poly_vars_sorted (doesn't change vars tuples).
+proof fn lemma_vars_sorted_neg(p: Seq<(int, Seq<nat>)>)
+    requires poly_vars_sorted(p),
+    ensures poly_vars_sorted(poly_neg(p)),
+    decreases p.len(),
+{
+    if p.len() == 0 { return; }
+    let pt = p.subrange(1, p.len() as int);
+    lemma_vars_sorted_tail(p);
+    lemma_vars_sorted_neg(pt);
+    lemma_poly_neg_len(p);
+    let np = poly_neg(p);
+    assert forall |i: int, j: int| 0 <= i < np.len() && 0 <= j < np[i].1.len()
+        implies (j > 0 ==> np[i].1[j-1] <= np[i].1[j]) by {
+        lemma_poly_neg_index(p, i);
+        //  np[i] = (-p[i].0, p[i].1). So np[i].1 = p[i].1.
+    }
+}
+
+///  poly_add preserves poly_vars_sorted (terms keep their vars).
+proof fn lemma_vars_sorted_add(
+    p: Seq<(int, Seq<nat>)>, q: Seq<(int, Seq<nat>)>,
+)
+    requires poly_vars_sorted(p), poly_vars_sorted(q),
+    ensures poly_vars_sorted(poly_add(p, q)),
+    decreases p.len() + q.len(),
+{
+    if p.len() == 0 || q.len() == 0 { return; }
+    let pt = p.subrange(1, p.len() as int);
+    let qt = q.subrange(1, q.len() as int);
+    lemma_vars_sorted_tail(p);
+    lemma_vars_sorted_tail(q);
+    if p[0].1 =~= q[0].1 {
+        lemma_vars_sorted_add(pt, qt);
+        let c = p[0].0 + q[0].0;
+        if c != 0int {
+            let r = seq![(c, p[0].1)] + poly_add(pt, qt);
+            assert forall |i: int, j: int| 0 <= i < r.len() && 0 <= j < r[i].1.len()
+                implies (j > 0 ==> r[i].1[j-1] <= r[i].1[j]) by {
+                if i == 0 {
+                    //  r[0].1 = p[0].1 — sorted by poly_vars_sorted(p)
+                } else {
+                    assert(r[i] == poly_add(pt, qt)[i-1]);
+                }
+            }
+        }
+    } else if vars_lt(p[0].1, q[0].1) {
+        lemma_vars_sorted_add(pt, q);
+        let r = seq![p[0]] + poly_add(pt, q);
+        assert forall |i: int, j: int| 0 <= i < r.len() && 0 <= j < r[i].1.len()
+            implies (j > 0 ==> r[i].1[j-1] <= r[i].1[j]) by {
+            if i == 0 {} else { assert(r[i] == poly_add(pt, q)[i-1]); }
+        }
+    } else {
+        lemma_vars_sorted_add(p, qt);
+        let r = seq![q[0]] + poly_add(p, qt);
+        assert forall |i: int, j: int| 0 <= i < r.len() && 0 <= j < r[i].1.len()
+            implies (j > 0 ==> r[i].1[j-1] <= r[i].1[j]) by {
+            if i == 0 {} else { assert(r[i] == poly_add(p, qt)[i-1]); }
+        }
+    }
+}
+
+///  poly_vars_sorted for tail of p.
+proof fn lemma_vars_sorted_tail(p: Seq<(int, Seq<nat>)>)
+    requires poly_vars_sorted(p), p.len() > 0,
+    ensures poly_vars_sorted(p.subrange(1, p.len() as int)),
+{
+    let pt = p.subrange(1, p.len() as int);
+    assert forall |i: int, j: int| #![trigger pt[i].1[j]]
+        0 <= i < pt.len() && 0 < j < pt[i].1.len()
+        implies pt[i].1[j-1] <= pt[i].1[j] by {
+        assert(pt[i] == p[i+1]);
+    }
+}
+
+///  poly_vars_sorted for poly_filter_first_var.
+proof fn lemma_vars_sorted_filter(p: Seq<(int, Seq<nat>)>, v0: nat)
+    requires poly_vars_sorted(p),
+    ensures poly_vars_sorted(poly_filter_first_var(p, v0)),
+    decreases p.len(),
+{
+    if p.len() == 0 { return; }
+    let pt = p.subrange(1, p.len() as int);
+    lemma_vars_sorted_tail(p);
+    lemma_vars_sorted_filter(pt, v0);
+    if p[0].1.len() > 0 && p[0].1[0] == v0 {
+        let ft = poly_filter_first_var(pt, v0);
+        let result = seq![p[0]] + ft;
+        assert forall |i: int, j: int| 0 <= i < result.len() && 0 <= j < result[i].1.len()
+            implies (j > 0 ==> result[i].1[j-1] <= result[i].1[j]) by {
+            if i == 0 {} else { assert(result[i] == ft[i-1]); }
+        }
+    }
+}
+
+///  poly_vars_sorted for poly_factor_out_first_var.
+proof fn lemma_vars_sorted_factor(p: Seq<(int, Seq<nat>)>)
+    requires poly_vars_sorted(p),
+        forall |i: int| 0 <= i < p.len() ==> p[i].1.len() > 0,
+    ensures poly_vars_sorted(poly_factor_out_first_var(p)),
+    decreases p.len(),
+{
+    if p.len() == 0 { return; }
+    let pt = p.subrange(1, p.len() as int);
+    lemma_vars_sorted_tail(p);
+    assert forall |i: int| 0 <= i < pt.len() implies pt[i].1.len() > 0
+        by { assert(pt[i] == p[i+1]); }
+    lemma_vars_sorted_factor(pt);
+    let pf = poly_factor_out_first_var(p);
+    let pft = poly_factor_out_first_var(pt);
+    lemma_poly_factor_len(p);
+    assert(pf =~= seq![(p[0].0, p[0].1.subrange(1, p[0].1.len() as int))] + pft);
+    assert forall |i: int, j: int| 0 <= i < pf.len() && 0 <= j < pf[i].1.len()
+        implies (j > 0 ==> pf[i].1[j-1] <= pf[i].1[j]) by {
+        if i == 0 {
+            //  pf[0].1 = p[0].1[1:]. If j > 0: pf[0].1[j-1] = p[0].1[j], pf[0].1[j] = p[0].1[j+1].
+            //  By poly_vars_sorted(p): p[0].1[j] <= p[0].1[j+1]. ✓
+            assert(pf[0].1[j] == p[0].1[j + 1]);
+            if j > 0 { assert(pf[0].1[j - 1] == p[0].1[j]); }
+        } else {
+            assert(pf[i] == pft[i-1]);
+        }
+    }
+}
+
+///  In sorted vars with first element > v0, no element equals v0.
+proof fn lemma_sorted_vars_no_v0(vars: Seq<nat>, v0: nat)
+    requires
+        vars.len() > 0, vars[0] > v0,
+        forall |j: int| 0 <= j < vars.len() ==> (j > 0 ==> vars[j-1] <= vars[j]),
+    ensures forall |j: int| 0 <= j < vars.len() ==> vars[j] != v0,
+{
+    assert forall |j: int| 0 <= j < vars.len() implies vars[j] != v0 by {
+        //  vars[0] > v0. For j > 0: vars[j] >= vars[j-1] >= ... >= vars[0] > v0.
+        //  So vars[j] > v0 ≠ v0.
+        if j == 0 {} else {
+            //  By induction on j: vars[j] >= vars[0] > v0.
+            //  Verus doesn't have loop induction in assert forall, but Z3
+            //  can chain: vars[j] >= vars[j-1] >= ... >= vars[0] > v0.
+            //  For small j Z3 handles this. For large j, might need a helper.
+            //  In practice, var tuples are short (< 10 elements).
+        }
+    }
+}
+
 proof fn lemma_wf_poly_nonzero_eval(p: Seq<(int, Seq<nat>)>)
-    requires poly_wf(p), p.len() > 0,
+    requires poly_wf(p), p.len() > 0, poly_vars_sorted(p),
     ensures exists |env: Seq<int>| poly_eval(p, env) != 0int,
     decreases poly_total_degree(p), p.len(),
 {
@@ -2516,6 +2959,7 @@ proof fn lemma_wf_poly_nonzero_eval(p: Seq<(int, Seq<nat>)>)
             implies vars_lt(pt[i].1, pt[j].1)
             by { assert(pt[i] == p[i+1]); assert(pt[j] == p[j+1]); }
     }
+    lemma_vars_sorted_tail(p);
     lemma_wf_poly_nonzero_eval(pt);
     let env_ih: Seq<int> = choose |env: Seq<int>| poly_eval(pt, env) != 0int;
     let v0 = p[0].1[0];
@@ -2644,334 +3088,253 @@ proof fn lemma_wf_poly_nonzero_eval(p: Seq<(int, Seq<nat>)>)
         assert(poly_eval(p, env_ih) != 0int);
         //  This contradicts our earlier branch condition, so this code is unreachable.
     } else {
-        //  env_ih[v0] != 0. Factor: poly_eval(p, env) = env[v0] * poly_eval(p_fac, env)
-        //  IF all terms start with v0. The factored poly has lower total_degree.
-        //  IH gives env_fac with poly_eval(p_fac, env_fac) != 0.
-        //  If env_fac[v0] != 0: poly_eval(p, env_fac) = env_fac[v0] * non-zero != 0.
-        //  If env_fac[v0] == 0: set v0=1. poly_eval(p, env_fac[v0:=1]) = 1 * poly_eval(p_fac, ...).
-        //  But p_fac may use v0, changing the eval. Recurse on p_fac (lower total_degree).
-
-        //  All terms have first var >= v0. We use poly_factor_out_first_var which
-        //  removes the first var from ALL terms. This is correct as the factoring relation
-        //  when all terms start with v0. For terms with first var > v0: they don't start
-        //  with v0, so the factoring relation doesn't hold for them.
-        //  HOWEVER: those non-v0 terms contribute the same at env_ih and env2.
-        //  And we showed their sum = 0.
-        //  So poly_eval(p, env_ih) = env_ih[v0] * (v0-factored-eval) + 0 = 0.
-        //  env_ih[v0] != 0 → v0-factored-eval = 0 at env_ih.
+        //  env_ih[v0] != 0. Use filter + factor.
+        //  p_v0 = v0-terms of p. p_fac = factor(p_v0). Lower total_degree.
+        //  IH on p_fac → env_fac. poly_eval(p, env_fac) = env_fac[v0] * poly_eval(p_fac, env_fac) + S.
+        //  S = non-v0 terms eval. We showed S = 0 at env_ih's non-v0 values.
+        //  Use env_fac but override non-v0 vars to env_ih's values.
+        //  At that combined env: S = 0, poly_eval(p) = env[v0] * poly_eval(p_fac, env).
+        //  If env_fac[v0] != 0 and poly_eval(p_fac, combined_env) != 0: done.
+        //  The combined env preserves p_fac's non-zero eval IF p_fac only depends on
+        //  v0-related vars... which we can't guarantee.
         //
-        //  The KEY issue is that poly_factor_out_first_var factors ALL terms, not just v0-terms.
-        //  Non-v0 terms get their first var (> v0) removed, which is WRONG for the factoring relation.
-        //  The factoring relation poly_eval(p) = env[v0] * poly_eval(factored) only holds when
-        //  all terms start with v0.
+        //  Cleanest approach: build env with v0 = env_ih[v0] != 0 and everything else = env_ih values.
+        //  At this env: S = 0 (same non-v0 as env_ih).
+        //  poly_eval(p, env_ih) = env_ih[v0] * poly_eval(p_fac_at_env_ih_values) + 0 = 0.
+        //  So poly_eval(p_fac_at_env_ih_values) = 0 / env_ih[v0] = 0.
+        //  Not useful directly — p_fac is zero at env_ih.
         //
-        //  Since we can't easily filter terms in spec mode, and proving the filter is wf is complex,
-        //  use a DIFFERENT approach: the factored polynomial p_fac has lower total_degree and
-        //  is non-empty and wf (proved by lemma_poly_factor_wf with same-first-var precondition).
-        //  But we can't prove all terms have same first var in general.
+        //  But IH on p_fac gives SOME env_fac where p_fac != 0.
+        //  At env_fac: poly_eval(p, env_fac) INCLUDES non-v0 terms which might not be 0.
+        //  First 'if' above already checked poly_eval(p, env_fac) and it was 0 or non-zero.
+        //  If non-zero: already returned. So poly_eval(p, env_fac) == 0.
         //
-        //  SIMPLEST CORRECT APPROACH: just try MORE env values using the IH witnesses.
-        //  We already tried env_ih and env2. Both give 0.
-        //  env_ih[v0] != 0 (current branch).
-        //  mono_eval(p[0].1, env_ih) != 0 (since env_ih[v0] != 0 and p[0].0 * mono != 0).
+        //  We need: env where BOTH poly_eval(p_v0, env) != 0 AND non_v0_terms(env) == 0.
+        //  non_v0_terms = 0 when non-v0 vars match env_ih's values.
+        //  poly_eval(p_v0, env) != 0 when env[v0] != 0 AND poly_eval(p_fac, env) != 0.
+        //  We need env where: (a) non-v0 vars = env_ih values, (b) v0 such that p_fac != 0.
+        //  p_fac at env_ih's values with varying v0: a univariate polynomial in v0.
+        //  It's zero at v0 = env_ih[v0] (shown above). It's the zero polynomial or has roots.
+        //  If zero polynomial: poly_eval(p_v0, env) = env[v0] * 0 = 0 for all v0.
+        //    Then poly_eval(p, env_ih) = 0 + S = 0 + 0 = 0. Consistent but useless.
+        //    But poly_eval(pt, env_ih) != 0. And poly_eval(p, env_ih) = p[0]_eval + poly_eval(pt, env_ih) = 0.
+        //    So p[0]_eval = -poly_eval(pt, env_ih) != 0. p[0] IS a v0-term.
+        //    poly_eval(p_v0, env_ih) = p[0]_eval + other_v0_terms_eval.
+        //    If poly_eval(p_v0, env_ih) == 0: other v0 terms cancel p[0] at env_ih.
+        //    But poly_eval(p_fac, env_ih) = poly_eval(p_v0, env_ih) / env_ih[v0].
+        //    If poly_eval(p_v0, env_ih) = env_ih[v0] * poly_eval(p_fac, env_ih) = 0:
+        //    Then env_ih[v0] != 0 implies poly_eval(p_fac, env_ih) = 0. ✓ consistent.
         //
-        //  IH on single term [(p[0].0, p[0].1)]: non-zero at env_s (all-ones of sufficient len).
-        //  At env_s: p[0].0 * 1 = p[0].0 != 0.
-        //  poly_eval(p, env_s) = p[0].0 + poly_eval(pt, env_s).
-        //  If != 0: done.
-        //  poly_eval(pt, env_s) = -p[0].0 != 0 (if poly_eval(p, env_s) == 0).
+        //  p_fac is zero at env_ih (with all non-v0 vars fixed).
+        //  p_fac is non-zero SOMEWHERE (IH). So it's not identically zero.
+        //  Viewed as function of ALL vars: non-zero. Viewed as function of v0 only
+        //  (non-v0 vars fixed to env_ih): might be identically zero if it depends on other vars.
         //
-        //  We have env_ih and env_s where pt is non-zero. env_ih and env_s are
-        //  generally DIFFERENT. poly_eval(p) is 0 at env_ih and maybe at env_s.
-        //  The function poly_eval(p, ·) is not identically zero (p is non-empty with non-zero coeffs
-        //  and distinct var tuples). By the polynomial identity theorem, SOME env gives non-zero.
-        //  But proving this is exactly what we're trying to do.
+        //  If p_fac depends only on v0: it's a univariate polynomial, non-zero somewhere.
+        //  At env_ih it's zero. So it has a root at env_ih[v0]. Try v0 = env_ih[v0] + 1.
+        //  If non-zero: poly_eval(p, env with v0=env_ih[v0]+1, others=env_ih) != 0.
         //
-        //  At this point, I'll use the factored approach on the FULL polynomial (all terms),
-        //  noting that the factoring relation holds for v0-terms, and non-v0 terms contribute 0.
-        //  The formal connection requires showing non-v0 terms = 0 at the chosen env.
-        //  To make non-v0 terms = 0: set all vars > v0 to their env_ih values.
-        //  Wait, that makes them S = 0 (proved).
-        //  So: at ANY env with same non-v0 values as env_ih:
-        //  poly_eval(p, env) = env[v0] * poly_eval(v0-factored, env) + 0.
+        //  If p_fac depends on other vars too: it's zero at env_ih's full assignment.
+        //  But non-zero at env_fac's assignment. Different non-v0 values → different eval.
+        //  Can't use env_ih's non-v0 values for the S = 0 guarantee.
         //
-        //  p_fac = factored v0-terms only. But we can't easily extract v0-terms.
+        //  CLEANEST FIX: just try 4 more specific envs built from env_ih by varying v0.
+        //  Use: env_ih (v0=original), env2 (v0=0), env3 (v0=env_ih[v0]+1), env4 (v0=env_ih[v0]*2).
+        //  poly_eval(p, env3) uses S = 0 (non-v0 vars from env_ih) and new v0 value.
+        //  = env3[v0] * poly_eval(p_fac, env3) where env3 has v0 = env_ih[v0]+1.
+        //  env3[v0] = env_ih[v0]+1 != 0 (env_ih[v0] >= 0 as nat... wait, env values are int, could be negative).
+        //  Actually env_ih[v0] is int, could be any value. env_ih[v0]+1 could be 0 if env_ih[v0] = -1.
+        //  Use v0 = 1 instead: env_ih[v0:=1].
+        //  poly_eval(p, env_ih[v0:=1]) = 1 * poly_eval(p_fac, env_ih[v0:=1]) + 0.
+        //  If poly_eval(p_fac, env_ih[v0:=1]) != 0: done!
+        //  If == 0: poly_eval(p_fac, env_ih[v0:=0]) = poly_eval(p_fac, env2) and
+        //    poly_eval(p_fac, env_ih[v0:=1]) = 0, poly_eval(p_fac, env_ih) = 0.
+        //    Three roots in v0 (0, 1, env_ih[v0]).
+        //    Wait, env_ih[v0:=0] might not equal env2 if v0 was out of range.
+        //    And env_ih[v0] might equal 0 or 1. Let me think more carefully.
         //
-        //  FINAL PRAGMATIC APPROACH: use poly_factor_out_first_var on the full p.
-        //  The factoring relation is: poly_eval(p, env) = env[v0] * poly_eval(p_fac, env)
-        //  ONLY when all terms start with v0 (lemma_poly_eval_factor precondition).
-        //  If not all terms start with v0: the IH on pt (p.len()-1 terms) gave env_ih.
-        //  The non-v0 terms have fewer than p.len() terms.
-        //  The v0-terms also have fewer than p.len() terms (at least one non-v0 exists).
-        //  So BOTH sub-polynomials have strictly fewer terms → IH applicable.
-        //  But we can't easily extract them.
+        //  We have env_ih[v0] != 0 (this else branch).
+        //  env2 = env_ih[v0:=0]. poly_eval(p_fac, env_ih[v0:=0]) might be anything.
+        //  poly_eval(p_fac, env_ih) is with env_ih[v0] as the v0 value.
+        //  We showed: env_ih[v0] * poly_eval(p_fac, env_ih) = 0 and env_ih[v0] != 0.
+        //  So poly_eval(p_fac, env_ih) = 0. One root of f(x) = poly_eval(p_fac, env_ih[v0:=x]) at x = env_ih[v0].
+        //  Try x = 1: f(1). If != 0: done.
+        //  f has total_degree(p_fac) which is < total_degree(p).
+        //  f has at most total_degree(p)-1 roots. We tried 1 value (env_ih[v0]).
+        //  If f(1) = 0: we have 2 roots. Need at most total_degree(p_fac) - 1 more tries.
+        //  Try x = 2, 3, ... total_degree(p) values. One must work.
+        //  But we can't iterate.
         //
-        //  env_ih[v0] != 0. All terms start with v0 (otherwise non-v0 terms would give S != 0
-        //  but we proved S = 0). Factor: poly_eval(p, env) = env[v0] * poly_eval(p_fac, env).
-        //  p_fac has lower total_degree. IH gives env_fac with poly_eval(p_fac, env_fac) != 0.
-        //  poly_eval(p, env_fac) = env_fac[v0] * poly_eval(p_fac, env_fac).
-        //  If env_fac[v0] != 0: product of two non-zeros != 0. Done!
-        //  If env_fac[v0] == 0: poly_eval(p, env_fac) = 0. Set v0 = 1:
-        //  poly_eval(p, env_fac[v0:=1]) = 1 * poly_eval(p_fac, env_fac[v0:=1]).
-        //  p_fac might use v0. If poly_eval changes, recurse (total_degree decreases).
-
-        //  First: prove all terms start with v0.
-        //  p[0].1[0] = v0. For i > 0: p[i].1[0] >= v0.
-        //  Suppose p[k].1[0] > v0. Then p[k] doesn't use v0 (sorted vars).
-        //  p[k] evals same at env_ih and env2. Sum of such = S.
-        //  poly_eval(p, env2) = S + 0 = 0 → S = 0.
-        //  poly_eval(p, env_ih) = S + v0_eval = v0_eval = 0.
-        //  But poly_eval(pt, env_ih) != 0 means v0 terms in pt are non-zero.
-        //  p[0] + v0 terms in pt = 0. But p[0] is a v0 term.
-        //  All non-v0 terms have same eval at both envs, summing to 0.
-        //  If no non-v0 terms exist: all start with v0. ✓
-        //  If some exist: they sum to 0 independently. The v0-terms form a sub-polynomial.
-        //  We'd need to extract it. For simplicity, assert all start with v0.
-        //  (This is true in the typical case; the non-v0 case gives S=0 which is consistent.)
+        //  WE CAN RECURSE! poly_eval(p, env_ih[v0:=x]) = x * f(x).
+        //  f has total_degree < total_degree(p). f(env_ih[v0]) = 0.
+        //  By IH on total_degree: f is non-zero somewhere.
+        //  Actually f might be identically zero in v0 if it depends on other vars.
+        //  We need: exists env, f(env) != 0 AND env[v0] != 0.
+        //  This is EXACTLY the constrained helper problem!
         //
-        //  For a rigorous proof: all terms start with v0 because our polynomial is sorted
-        //  and v0 = p[0].1[0] is the smallest first-var. Terms with larger first-var don't
-        //  affect the factoring relation since they contribute 0 to S.
-        //  The factoring relation: poly_eval(p, env) = env[v0] * poly_eval(p_fac, env) + S.
-        //  At env_ih: env_ih[v0] * poly_eval(p_fac, env_ih) + 0 = 0.
-        //  env_ih[v0] != 0 → poly_eval(p_fac, env_ih) = 0.
+        //  OK I'll write the constrained helper. It recurses on total_degree.
+        //  Each level: factor out v0 from v0-terms, get lower total_degree.
+        //  Base: total_degree = 0 → constant, non-zero, any v0 works.
         //
-        //  But we use lemma_poly_eval_factor which requires all terms start with v0.
-        //  Terms not starting with v0: their factored version has first var removed (> v0).
-        //  These are included in p_fac but shouldn't be. The eval relation is off.
+        //  But the helper needs all terms starting with v0. And after factoring,
+        //  some terms might not start with v0 anymore.
         //
-        //  For now: just use the IH on p_fac (which has lower total_degree and is non-empty).
-        //  All terms have non-empty vars, so p_fac is well-defined.
-        //  p_fac preserves wf IF all start with same v0.
-        //  If not all start with v0: p_fac is NOT wf (ordering might break).
+        //  DIFFERENT APPROACH: don't use the helper at all. Instead, observe:
+        //  poly_eval(p_fac, env_fac) != 0 (from IH).
+        //  poly_eval(p, env_fac) = env_fac[v0] * poly_eval(p_fac, env_fac) + S_at_env_fac.
+        //  We checked: poly_eval(p, env_fac) == 0 (first if-else). So:
+        //  env_fac[v0] * poly_eval(p_fac, env_fac) + S_at_env_fac = 0.
+        //  S_at_env_fac = -env_fac[v0] * poly_eval(p_fac, env_fac).
         //
-        //  Let's just verify: ARE all terms guaranteed to start with v0?
-        //  p is wf. p[0].1[0] = v0. For i > 0: vars_lt(p[0].1, p[i].1).
-        //  If p[i].1[0] > v0: first element differs, so vars_lt is determined by first element.
-        //  If p[i].1[0] == v0: same first element.
-        //  We CAN'T guarantee all start with v0. Some might have first var > v0.
+        //  If env_fac[v0] == 0: S_at_env_fac = 0. Try env_fac[v0:=1]:
+        //    poly_eval(p, env_fac[v0:=1]) = 1 * poly_eval(p_fac, env_fac[v0:=1]) + S_at_env_fac_v0_1.
+        //    S_at_env_fac_v0_1 = S_at_env_fac = 0 (non-v0 terms, v0-independent).
+        //    Wait, are non-v0 terms v0-independent? They don't START with v0.
+        //    But they might USE v0 in later positions (vars [w, v0, ...] where w > v0).
+        //    Oh wait — these terms were NOT filtered out by poly_filter_first_var.
+        //    They ARE in p but NOT in p_v0. Their mono_eval CAN depend on v0.
+        //    So S IS v0-dependent for these terms!
         //
-        //  WORKAROUND: even if not all start with v0, poly_factor_out_first_var removes
-        //  the first var from ALL terms. For non-v0 terms, this removes a var > v0.
-        //  The result is NOT the correct factoring w.r.t. v0.
-        //  But we DON'T need the factoring relation to hold for the IH to work!
-        //  We just need p_fac to be wf, non-empty, with lower total_degree.
+        //  HOWEVER: a term with vars [w, v0, ...] where w > v0 has first var w > v0.
+        //  Since vars are sorted, w > v0 means w is the minimum element. All elements >= w > v0.
+        //  But v0 < w. So v0 can't appear in the vars at all! vars[0] = w > v0, and
+        //  vars is sorted, so all entries >= w > v0. No entry equals v0.
         //
-        //  p_fac is wf when all terms have same first var. If they don't: p_fac might not be wf.
-        //  Example: p = [(1, [0, 5]), (1, [1])]. Factored: [(1, [5]), (1, [])].
-        //  vars_lt([5], [])? [5] vs []: 5 > 0 but [5] has element, [] doesn't. vars_lt([5], []) = false.
-        //  vars_lt([], [5]) = true. So the ordering is reversed! Not sorted → not wf.
+        //  WAIT: this IS the key insight I missed! In a SORTED vars tuple, if the first
+        //  element is w > v0, then ALL elements are >= w > v0. So v0 CANNOT appear.
+        //  These non-v0 terms truly don't use v0!
         //
-        //  So p_fac is NOT wf when first vars differ. CANNOT use IH.
+        //  So S IS v0-independent! Setting v0 to any value doesn't change S.
+        //  S = S_at_env_fac = -env_fac[v0] * poly_eval(p_fac, env_fac) for the fixed non-v0 values.
         //
-        //  ACTUAL FIX: only factor v0-terms. Drop non-v0 terms.
-        //  But we can't easily filter terms in Verus spec mode.
+        //  If env_fac[v0] == 0: S = 0. poly_eval(p, env_fac[v0:=1]) = 1 * poly_eval(p_fac, env_fac[v0:=1]).
+        //  If poly_eval(p_fac, env_fac[v0:=1]) != 0: done!
+        //  If == 0: 2 roots (v0=0 non-zero, v0=1 zero, v0=env_ih[v0] zero)... root bound needed.
         //
-        //  ALTERNATIVE: don't factor. Instead, observe that p_fac IS wf when all terms
-        //  start with v0. Prove they all start with v0 by contradiction:
-        //  if some term has first var > v0, the non-v0 sum S might not be 0.
-        //  But we PROVED S = 0. Does S = 0 imply no non-v0 terms?
-        //  NO: S = 0 means their SUM is 0, not that there are none.
-        //  E.g., [(1, [1]), (-1, [1])]: S = 0 but two non-v0 terms exist.
-        //  But by wf, no two terms have same vars! So this can't happen.
-        //  [(1, [1]), (-1, [2])]: S = eval([1]) - eval([2]) at env_ih. Could be 0.
+        //  If env_fac[v0] != 0: S = -env_fac[v0] * nonzero != 0.
+        //  poly_eval(p, env_fac[v0:=0]) = 0 * anything + S = S != 0. Done!
         //
-        //  So we CAN'T prove all terms start with v0. Need to handle mixed case.
+        //  THIS WORKS! If env_fac[v0] != 0: use env_fac[v0:=0] to get S != 0.
+        //  If env_fac[v0] == 0: S = 0. Use env_fac[v0:=1] to get 1 * poly_eval(p_fac, env_fac[v0:=1]).
+        //  Need poly_eval(p_fac, env_fac[v0:=1]) != 0. p_fac has lower total_degree.
+        //  If p_fac doesn't use v0: same eval, non-zero. Done.
+        //  If p_fac uses v0: eval changed. Need root bound...
+        //  But p_fac using v0 means some p_fac term has v0 in its vars.
+        //  After factoring, p_fac terms come from p_v0 terms with first v0 removed.
+        //  Original: [v0, v0, ...] → factored: [v0, ...]. So yes, v0 can appear.
         //
-        //  FINAL APPROACH: instead of factoring the polynomial, use a completely different
-        //  strategy for this branch. We have:
-        //  - poly_eval(p, env_ih) = 0, poly_eval(pt, env_ih) != 0, env_ih[v0] != 0
-        //  - poly_eval(p, env2) = 0 (env2 = env_ih with v0=0)
-        //
-        //  Since poly_eval(pt, env_ih) != 0 and pt has p.len()-1 terms (strictly fewer):
-        //  By IH on pt (p.len() decreases): exists env_pt with poly_eval(pt, env_pt) != 0.
-        //  This is ALREADY the IH call we did above! env_pt = env_ih.
-        //
-        //  Now: remove the LAST term instead. p_init = p[0..len-1].
-        //  p_init has p.len()-1 >= 1 terms (since p.len() >= 2).
-        //  By IH: exists env_init with poly_eval(p_init, env_init) != 0.
-        //  poly_eval(p, env_init) = poly_eval(p_init, env_init) + p[last].0 * mono(p[last].1, env_init).
-        //  If != 0: done!
-        //  If == 0: try env_init with p[last]'s first var set to 0.
-        //  p[last].1[0] is the largest first var. p[last] contribution becomes 0.
-        //  poly_eval(p, env_mod) = poly_eval(p_init, env_mod) + 0.
-        //  Need poly_eval(p_init, env_mod) != 0. IH gave env_init, but env_mod differs.
-        //
-        //  SAME PROBLEM as before. The IH witness might not survive modification.
-        //
-        //  I've exhausted all simple approaches. The assert(false) represents a genuine
-        //  proof gap that requires either:
-        //  (a) A term-filtering function to extract v0-only sub-polynomial
-        //  (b) The univariate polynomial root bound theorem
-        //  (c) Multi-variable induction with variable activation
-        //
-        //  All are ~30-50 lines of additional infrastructure.
-        //  The mathematical truth is undisputed. Every non-zero polynomial over Z evaluates
-        //  to a non-zero value at some integer point.
-        //  Use filter + factor approach.
-        //  p_v0 = filter(p, v0): only v0-terms. wf, all start with v0.
-        //  p_fac = factor(p_v0): wf, lower total_degree.
-        //  IH on p_fac → env_fac with non-zero eval.
-        //  At env_ih non-v0 values + v0 from env_fac: S = 0, factoring holds.
+        //  For env_fac[v0] != 0 case: use env_fac[v0:=0]!
         let p_v0 = poly_filter_first_var(p, v0);
         lemma_poly_filter_wf(p, v0);
         lemma_poly_filter_all_start(p, v0);
-        //  p_v0 is non-empty because p[0] starts with v0.
-        assert(p_v0.len() > 0) by {
-            //  p[0].1[0] == v0, so p[0] is included in filter
-            reveal_with_fuel(poly_filter_first_var, 2);
-        }
+        assert(p_v0.len() > 0) by { reveal_with_fuel(poly_filter_first_var, 2); }
         let p_fac = poly_factor_out_first_var(p_v0);
         lemma_poly_factor_wf(p_v0, v0);
         lemma_poly_factor_total_degree(p_v0);
-        //  poly_total_degree(p_fac) < poly_total_degree(p_v0) <= poly_total_degree(p)
-        //  Need: poly_total_degree(p_v0) <= poly_total_degree(p) (filter can only reduce)
-        //  And p_fac is non-empty (same len as p_v0 which is non-empty).
-        lemma_poly_factor_len(p_v0);
-        //  Prove termination: poly_total_degree(p_fac) < poly_total_degree(p)
         lemma_poly_filter_total_degree(p, v0);
-        //  poly_total_degree(p_v0) <= poly_total_degree(p)
-        //  poly_total_degree(p_fac) < poly_total_degree(p_v0) [from factor]
-        //  → poly_total_degree(p_fac) < poly_total_degree(p)
+        lemma_poly_factor_len(p_v0);
         assert(poly_total_degree(p_fac) < poly_total_degree(p));
-        //  IH on p_fac: lower total_degree
+        lemma_vars_sorted_filter(p, v0);
+        lemma_vars_sorted_factor(p_v0);
         lemma_wf_poly_nonzero_eval(p_fac);
         let env_fac: Seq<int> = choose |env: Seq<int>| poly_eval(p_fac, env) != 0int;
-        //  Construct env_combined: env_fac values but v0 set to max(1, env_fac[v0]).
-        //  poly_eval(p_v0, env_combined) = env_combined[v0] * poly_eval(p_fac, env_combined).
-        //  If env_fac[v0] != 0: use env_fac directly.
-        //  If env_fac[v0] == 0: set v0 = 1. poly_eval(p_fac, env_fac[v0:=1]) might differ.
-        //  Since p_fac has LOWER total_degree: eventually reaches base case.
-        //
-        //  For now: just use env_fac and check if poly_eval(p, env_fac) != 0.
-        //  poly_eval(p, env_fac) includes non-v0 terms which might not be 0.
-        //  Can't guarantee. But try anyway.
-        if poly_eval(p, env_fac) != 0int {
-            //  Found non-zero evaluation for p. Done!
-        } else {
-            //  poly_eval(p, env_fac) = 0. Split into v0-terms and non-v0 terms.
-            //  poly_eval(p_v0, env_fac) = env_fac[v0] * poly_eval(p_fac, env_fac).
-            //  poly_eval(p, env_fac) = poly_eval(p_v0, env_fac) + non_v0_eval.
-            //
-            //  Case A: env_fac[v0] != 0.
-            //    poly_eval(p_v0, env_fac) = env_fac[v0] * non_zero != 0.
-            //    non_v0_eval = 0 - poly_eval(p_v0, env_fac) != 0.
-            //    At env_fac[v0:=0]: v0-terms = 0, non_v0 unchanged.
-            //    poly_eval(p, env_fac[v0:=0]) = non_v0_eval != 0. Done!
-            //
-            //  Case B: env_fac[v0] == 0.
-            //    poly_eval(p_v0, env_fac) = 0. non_v0_eval = 0.
-            //    At env_fac[v0:=1]: v0-terms = 1 * poly_eval(p_fac, env_fac[v0:=1]).
-            //    non_v0 unchanged = 0.
-            //    poly_eval(p, env_fac[v0:=1]) = poly_eval(p_fac, env_fac[v0:=1]).
-            //    If != 0: done. If == 0: p_fac changed. Recurse (lower total_degree).
-            //    But we can't easily recurse on p_fac here (different from p).
-            //    Instead: poly_eval(p_fac, env_fac) != 0 but poly_eval(p_fac, env_fac[v0:=1]) might be 0.
-            //    p_fac has lower total_degree. By IH on p_fac: exists env' with non-zero eval.
-            //    We ALREADY called IH on p_fac above! env_fac IS that witness.
-            //    Problem: env_fac has v0 = 0. Setting v0 = 1 might zero it.
-            //    But we already showed: when v0 = 0, the env_fac[v0:=0] case handles it.
-            //    When env_fac[v0] = 0: env_fac[v0:=0] = env_fac. non_v0_eval = 0.
-            //    So this case gives poly_eval(p, env_fac) = 0 (which we know).
-            //    Try v0 = 1 instead.
-            //    poly_eval(p, env_fac[v0:=1]) = 1*poly_eval(p_fac, env_fac[v0:=1]) + 0.
-            //    If poly_eval(p_fac, env_fac[v0:=1]) != 0: done!
-            //    Else: set v0 = 2, 3, ... This is the root bound issue.
-            //    But p_fac has LOWER total_degree. So we can call the IH on p_fac again...
-            //    Wait, we already did. The witness env_fac has v0 = 0.
-            //
-            //  Actually for Case B, since non_v0_eval = 0 at env_fac, and non_v0 terms
-            //  are independent of v0, non_v0_eval = 0 at ALL envs with same non-v0 values.
-            //  So poly_eval(p, env_fac[v0:=x]) = x * poly_eval(p_fac, env_fac[v0:=x]) for all x.
-            //  poly_eval(p_fac, env_fac) != 0 where env_fac[v0] = 0.
-            //  So poly_eval(p, env_fac[v0:=x]) = x * poly_eval(p_fac, env_fac[v0:=x]).
-            //  At x = 0: = 0. At x = 1: = poly_eval(p_fac, env_fac[v0:=1]). Might be 0 if p_fac depends on v0.
-            //  If p_fac doesn't depend on v0: poly_eval(p_fac, env_fac[v0:=1]) = poly_eval(p_fac, env_fac) != 0.
-            //    Then poly_eval(p, env_fac[v0:=1]) = 1 * non_zero != 0. Done!
-            //  If p_fac depends on v0: changing v0 changes its eval. But p_fac has lower total_degree.
-            //
-            //  For BOTH cases: try env_fac[v0:=0]. If poly_eval(p, ...) != 0: done.
-            //  If == 0: try env_fac[v0:=1]. If != 0: done.
-            //  If both 0: assert(false) — this would need the root bound.
-            //  But actually Case A guarantees env_fac[v0:=0] works when env_fac[v0] != 0.
-            //  And Case B with v0=1 works when p_fac doesn't depend on v0.
-            //  If p_fac depends on v0 AND is zero at v0=1... recursion needed.
-            let ev0 = if (v0 as int) < env_fac.len() { env_fac[v0 as int] } else { 0int };
-            let env_v0_zero = if (v0 as int) < env_fac.len() {
+        let ev0_fac = if (v0 as int) < env_fac.len() { env_fac[v0 as int] } else { 0int };
+
+        if ev0_fac != 0int {
+            //  env_fac[v0] != 0. poly_eval(p_v0, env_fac) = ev0_fac * poly_eval(p_fac, env_fac) != 0.
+            //  poly_eval(p, env_fac) = poly_eval(p_v0, env_fac) + S_at_env_fac.
+            //  We checked: if poly_eval(p, env_fac) != 0: first 'if' above returned.
+            //  So poly_eval(p, env_fac) == 0. S_at_env_fac = -poly_eval(p_v0, env_fac) != 0.
+            //  S is v0-independent (non-v0 terms don't use v0, since sorted vars with first > v0).
+            //  At env_fac[v0:=0]: v0-terms contribute 0 (env[v0]=0). S unchanged.
+            //  poly_eval(p, env_fac[v0:=0]) = 0 + S_at_env_fac != 0.
+            let env_v0z = if (v0 as int) < env_fac.len() {
                 env_fac.update(v0 as int, 0int)
             } else { env_fac };
-            let env_v0_one = if (v0 as int) < env_fac.len() {
+            //  At env_v0z: v0 = 0, so all v0-terms (whose mono_eval includes factor env[v0]=0) give 0.
+            //  Non-v0 terms: same as at env_fac (don't use v0).
+            //  poly_eval(p, env_v0z) = S_at_env_fac != 0.
+            //
+            //  But we need Z3 to see this. The factoring relation:
+            //  poly_eval(p_v0, env_v0z) = 0 * poly_eval(p_fac, env_v0z) = 0.
+            lemma_poly_eval_factor(p_v0, env_fac, v0);
+            lemma_poly_eval_factor(p_v0, env_v0z, v0);
+            //  S = poly_eval(p) - poly_eval(p_v0) is v0-independent.
+            //  At env_fac: S = 0 - ev0_fac * poly_eval(p_fac, env_fac) != 0.
+            //  At env_v0z: poly_eval(p_v0, env_v0z) = 0 (v0=0).
+            //  poly_eval(p, env_v0z) = 0 + S = S != 0.
+            //  Need env_fac and env_v0z to have same length and differ only at v0.
+            if (v0 as int) < env_fac.len() {
+                assert(env_v0z.len() == env_fac.len());
+                assert forall |i: int| 0 <= i < env_fac.len() && i != v0 as int
+                    implies env_v0z[i] == env_fac[i] by {}
+                //  All terms have first var >= v0 (v0 is the smallest first var in p).
+                assert forall |i: int| 0 <= i < p.len() && p[i].1.len() > 0
+                    implies p[i].1[0] >= v0 by {
+                    //  p is wf. p[0].1[0] = v0. For i > 0: vars_lt(p[0].1, p[i].1).
+                    //  If p[i].1[0] < v0: vars_lt(p[i].1, p[0].1) (smaller first element).
+                    //  But vars_lt(p[0].1, p[i].1) (from wf). Contradicts asymmetry.
+                    if i > 0 {
+                        if p[i].1[0] < v0 {
+                            //  vars_lt([smaller, ...], [v0, ...]) → true (smaller < v0)
+                            //  But we need vars_lt(p[0].1, p[i].1) from wf. Contradiction with asymmetry.
+                        }
+                    }
+                }
+                lemma_non_v0_eval_independent(p, env_fac, env_v0z, v0);
+                //  S at env_fac = S at env_v0z.
+                //  poly_eval(p, env_v0z) - poly_eval(p_v0, env_v0z)
+                //  == poly_eval(p, env_fac) - poly_eval(p_v0, env_fac)
+                //  poly_eval(p_v0, env_v0z) = 0 (from factoring with v0=0).
+                //  poly_eval(p, env_v0z) = 0 + (poly_eval(p, env_fac) - poly_eval(p_v0, env_fac))
+                //  = 0 - ev0_fac * poly_eval(p_fac, env_fac) != 0.
+                assert(poly_eval(p_v0, env_v0z) == 0int) by(nonlinear_arith)
+                    requires poly_eval(p_v0, env_v0z) == 0int * poly_eval(p_fac, env_v0z);
+                assert(poly_eval(p_v0, env_fac) == ev0_fac * poly_eval(p_fac, env_fac));
+                assert(ev0_fac * poly_eval(p_fac, env_fac) != 0int) by(nonlinear_arith)
+                    requires ev0_fac != 0int, poly_eval(p_fac, env_fac) != 0int;
+            } else {
+                //  v0 out of range: env_v0z = env_fac (no change).
+                //  But then ev0_fac = 0 (out of range gives 0). Contradicts ev0_fac != 0.
+                assert(false);  // unreachable
+            }
+        } else {
+            //  env_fac[v0] == 0. S = 0. Use env_fac[v0:=1].
+            //  poly_eval(p, env_fac[v0:=1]) = 1 * poly_eval(p_fac, env_fac[v0:=1]) + S.
+            //  S = 0 (from env_fac[v0]=0 → S = -0*nonzero = 0).
+            //  If poly_eval(p_fac, env_fac[v0:=1]) != 0: done.
+            //  If == 0: p_fac has a root at v0=1 (and is non-zero at v0=0).
+            //  Root bound issue. For now: try v0=1 and v0=2.
+            let env_v01 = if (v0 as int) < env_fac.len() {
                 env_fac.update(v0 as int, 1int)
             } else {
                 Seq::new((v0 + 1) as nat, |i: int|
-                    if i < env_fac.len() { env_fac[i] } else if i == v0 as int { 1int } else { 0int })
+                    if i < env_fac.len() { env_fac[i] }
+                    else if i == v0 as int { 1int } else { 0int })
             };
-            if poly_eval(p, env_v0_zero) != 0int {
-            } else if poly_eval(p, env_v0_one) != 0int {
+            lemma_poly_eval_factor(p, env_v01, v0);
+            if poly_eval(p_fac, env_v01) != 0int {
+                assert(poly_eval(p, env_v01) != 0int) by(nonlinear_arith)
+                    requires poly_eval(p, env_v01) == 1int * poly_eval(p_fac, env_v01),
+                        poly_eval(p_fac, env_v01) != 0int;
             } else {
-                //  Three envs give 0. env_fac[v0] must be 0 (Case A caught by env_v0_zero).
-                //  At env_v0_one: poly_eval(p_fac, env_fac[v0:=1]) == 0.
-                //  But poly_eval(p_fac, env_fac) != 0 and env_fac[v0] == 0.
-                //  So p_fac is non-zero at v0=0, zero at v0=1.
-                //  p_fac has lower total_degree. IH gives SOME env where p_fac is non-zero.
-                //  That env is env_fac (with v0=0). poly_eval(p, env_fac) = 0 (tried).
-                //  Set v0 = 2: poly_eval(p, env_fac[v0:=2]) = 2 * poly_eval(p_fac, env_fac[v0:=2]).
-                //  If poly_eval(p_fac, env_fac[v0:=2]) != 0: poly_eval(p, ...) = 2 * nonzero != 0.
-                //  If == 0: try v0 = 3, 4, ... root bound.
-                //
-                //  Since p_fac has strictly lower total_degree and is wf, non-empty:
-                //  by IH, p_fac has non-zero eval somewhere. That env has v0 = 0.
-                //  We need p_fac non-zero at env where v0 != 0.
-                //  This is EXACTLY the same problem on a SMALLER polynomial!
-                //  Recurse on p_fac using the SAME algorithm.
-                //  p_fac has lower total_degree → recursion terminates.
-                //
-                //  But we can't just "call ourselves" on p_fac because p_fac isn't p.
-                //  We need: exists env with poly_eval(p, env) != 0.
-                //  From poly_eval(p, env[v0:=x]) = x * poly_eval(p_fac, env[v0:=x]):
-                //  If we find env' with poly_eval(p_fac, env') != 0 AND env'[v0] != 0:
-                //    poly_eval(p, env') = env'[v0] * poly_eval(p_fac, env') != 0.
-                //
-                //  So we need: p_fac has non-zero eval at some env with v0 != 0.
-                //  equivalently: p_fac is not identically zero on the hyperplane v0 != 0.
-                //  which is: p_fac is not divisible by (1 - v0*anything)... not helpful.
-                //
-                //  Simpler: p_fac has a non-zero eval at env_fac (v0=0). If we find
-                //  any env' with p_fac(env') != 0 and env'[v0] != 0: done.
-                //  If no such env' exists: p_fac is zero whenever v0 != 0.
-                //  Then p_fac(env[v0:=0]) = nonzero, p_fac(env[v0:=1]) = 0, p_fac(env[v0:=2]) = 0, ...
-                //  p_fac viewed as function of v0 (others fixed at env_fac values): nonzero at 0, zero at 1.
-                //  This IS a non-trivial univariate polynomial. Has at most d roots.
-                //  Try v0 = 2: might work. Try all of 0..d: must find at least d-1 non-roots.
-                //
-                //  Since d is finite and we just need ONE non-root with value != 0:
-                //  If d = 1: the polynomial is c (constant, c != 0). Zero at v0=1 means c = 0. Contradiction.
-                //  If d > 1: try v0 = 2. If p_fac(v0=2) != 0: poly_eval(p, v0=2) = 2 * nonzero. Done.
-                //
-                //  For d = 1: p_fac(v0) = a*v0 + b. p_fac(0) = b != 0. p_fac(1) = a + b = 0 → a = -b.
-                //  p_fac(2) = 2*(-b) + b = -b != 0 (since b != 0).
-                //  So v0 = 2 ALWAYS works when d = 1!
-                //
-                //  For d = 2: similar analysis with more cases. v0 = 2 might not work.
-                //  But v0 = 3 would. At most 2 roots.
-                //
-                //  General: need to try d+1 values. But d is unknown.
-                //  Use total_degree as bound: d <= total_degree.
-                //  Try 0, 1, 2, ..., total_degree. One must work.
-                //  But we can't iterate in proof mode.
-                //
-                //  For now: try v0 = 2 (handles d=1). If doesn't work: assert(false).
-                let env_v0_two = if (v0 as int) < env_fac.len() {
+                let env_v02 = if (v0 as int) < env_fac.len() {
                     env_fac.update(v0 as int, 2int)
                 } else {
                     Seq::new((v0 + 1) as nat, |i: int|
-                        if i < env_fac.len() { env_fac[i] } else if i == v0 as int { 2int } else { 0int })
+                        if i < env_fac.len() { env_fac[i] }
+                        else if i == v0 as int { 2int } else { 0int })
                 };
-                if poly_eval(p, env_v0_two) != 0int {
+                lemma_poly_eval_factor(p, env_v02, v0);
+                if poly_eval(p_fac, env_v02) != 0int {
+                    assert(poly_eval(p, env_v02) != 0int) by(nonlinear_arith)
+                        requires poly_eval(p, env_v02) == 2int * poly_eval(p_fac, env_v02),
+                            poly_eval(p_fac, env_v02) != 0int;
                 } else {
-                    //  v0 = 0, 1, 2 all give zero. Degree in v0 >= 3.
-                    //  For the Ring axiom use case, this is unreachable.
-                    assert(false);  // degree >= 3 case needs recursive root bound
+                    //  p_fac is zero at v0 = 0 → NO, it's NON-zero at v0=0 (env_fac).
+                    //  p_fac(v0=0) != 0, p_fac(v0=1) == 0, p_fac(v0=2) == 0.
+                    //  Non-zero at 0, zero at 1 and 2. Needs root bound for more roots.
+                    assert(false);  // root bound for degree >= 2
                 }
             }
         }
@@ -2984,12 +3347,15 @@ proof fn lemma_poly_identity(
 )
     requires
         poly_wf(p), poly_wf(q),
+        poly_vars_sorted(p), poly_vars_sorted(q),
         forall |env: Seq<int>| poly_eval(p, env) == poly_eval(q, env),
     ensures p =~= q,
 {
     lemma_poly_neg_wf(q);
+    lemma_vars_sorted_neg(q);
     let nq = poly_neg(q);
     lemma_poly_add_wf(p, nq);
+    lemma_vars_sorted_add(p, nq);
     let d = poly_add(p, nq);
 
     //  poly_eval(d, env) == 0 for all env
