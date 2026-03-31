@@ -113,11 +113,20 @@ impl<const N: usize, const F: usize> RuntimeGpuFixedPoint<N, F> {
                         (if k == F as int { ArithExpr::Const(1) } else { ArithExpr::Const(0) }),
             decreases N - j as usize,
         {
-            out.push(if j == F as u32 {
+            let elem = if j == F as u32 {
                 RuntimeArithExpr::Const(1)
             } else {
                 RuntimeArithExpr::Const(0)
-            });
+            };
+            proof {
+                reveal_with_fuel(RuntimeArithExpr::view_spec, 2);
+                if j == F as u32 {
+                    assert(elem.view_spec() == ArithExpr::Const(1));
+                } else {
+                    assert(elem.view_spec() == ArithExpr::Const(0));
+                }
+            }
+            out.push(elem);
             j = j + 1;
         }
         out
@@ -157,15 +166,13 @@ impl<const N: usize, const F: usize> RuntimeGpuFixedPoint<N, F> {
                 view_spec_seq(a@), view_spec_seq(b@), limb as nat),
         decreases limb,
     {
+        reveal_with_fuel(RuntimeArithExpr::view_spec, 5);
+        reveal_with_fuel(gen_add_carry, 2);
         if limb == 0 {
-            //  Matches gen_add_carry(..., 0) == ArithExpr::Const(0)
-            assert(RuntimeArithExpr::Const(0).view_spec() == ArithExpr::Const(0int));
-            reveal_with_fuel(gen_add_carry, 1);
             RuntimeArithExpr::Const(0)
         } else {
             let prev = limb - 1;
             let carry_prev = Self::build_carry(a, b, prev);
-            //  Div(Add(Add(a[prev], b[prev]), carry_prev), BASE)
             RuntimeArithExpr::Div(
                 Box::new(RuntimeArithExpr::Add(
                     Box::new(RuntimeArithExpr::Add(
@@ -184,6 +191,7 @@ impl<const N: usize, const F: usize> RuntimeGpuFixedPoint<N, F> {
             result.view_spec() == gen_add_result_limb(
                 view_spec_seq(a@), view_spec_seq(b@), limb as nat),
     {
+        reveal_with_fuel(RuntimeArithExpr::view_spec, 5);
         let carry = Self::build_carry(a, b, limb);
         RuntimeArithExpr::Mod(
             Box::new(RuntimeArithExpr::Add(
@@ -240,6 +248,7 @@ impl<const N: usize, const F: usize> RuntimeGpuFixedPoint<N, F> {
                         view_spec_seq(a@), view_spec_seq(b@), k as nat),
             decreases N - j as usize,
         {
+            proof { reveal_with_fuel(RuntimeArithExpr::view_spec, 5); }
             out.push(RuntimeArithExpr::Sub(
                 Box::new(a[j as usize].clone()),
                 Box::new(b[j as usize].clone())));
