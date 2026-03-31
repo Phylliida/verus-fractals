@@ -1421,6 +1421,8 @@ proof fn lemma_arith_to_poly_vars_sorted(e: &ArithExpr)
         ArithExpr::Mul(a, b) => {
             lemma_arith_to_poly_vars_sorted(a);
             lemma_arith_to_poly_vars_sorted(b);
+            lemma_arith_to_poly_wf(a);
+            lemma_arith_to_poly_wf(b);
             lemma_vars_sorted_mul(arith_to_poly(a), arith_to_poly(b));
         },
         _ => {},
@@ -1455,6 +1457,7 @@ proof fn lemma_vars_sorted_mul(
 ///  mono_mul_poly preserves poly_vars_sorted.
 proof fn lemma_vars_sorted_mono_mul(c: int, vars: Seq<nat>, q: Seq<(int, Seq<nat>)>)
     requires poly_vars_sorted(q), poly_wf(q), c != 0int,
+        forall |j: int| #![trigger vars[j]] 0 < j < vars.len() ==> vars[j-1] <= vars[j],
     ensures poly_vars_sorted(mono_mul_poly(c, vars, q)),
     decreases q.len(),
 {
@@ -1473,6 +1476,7 @@ proof fn lemma_vars_sorted_mono_mul(c: int, vars: Seq<nat>, q: Seq<(int, Seq<nat
     //  mono_mul_poly(c, vars, q) = poly_insert(nc, nv, rest)
     //  vars_merge produces sorted output → nv is sorted.
     //  poly_insert preserves poly_vars_sorted (it inserts a sorted-vars term).
+    lemma_vars_merge_sorted(vars, q[0].1);
     lemma_vars_sorted_insert(c * q[0].0, vars_merge(vars, q[0].1), mono_mul_poly(c, vars, qt));
 }
 
@@ -1567,6 +1571,118 @@ proof fn lemma_add_vars_sorted(a: &ArithExpr, b: &ArithExpr)
     lemma_vars_sorted_add(arith_to_poly(a), arith_to_poly(b));
 }
 
+///  Helper for mul_associative: eval part.
+proof fn lemma_mul_assoc_eval(a: &ArithExpr, b: &ArithExpr, c: &ArithExpr)
+    ensures forall |env: Seq<int>|
+        poly_eval(poly_mul(poly_mul(arith_to_poly(a), arith_to_poly(b)), arith_to_poly(c)), env)
+        == poly_eval(poly_mul(arith_to_poly(a), poly_mul(arith_to_poly(b), arith_to_poly(c))), env),
+{
+    let pa = arith_to_poly(a);
+    let pb = arith_to_poly(b);
+    let pc = arith_to_poly(c);
+    lemma_arith_to_poly_wf(a);
+    lemma_arith_to_poly_wf(b);
+    lemma_arith_to_poly_wf(c);
+    lemma_poly_mul_wf(pa, pb);
+    lemma_poly_mul_wf(pb, pc);
+    assert forall |env: Seq<int>|
+        poly_eval(poly_mul(poly_mul(pa, pb), pc), env)
+            == poly_eval(poly_mul(pa, poly_mul(pb, pc)), env) by {
+        lemma_poly_eval_mul(pa, pb, env);
+        lemma_poly_eval_mul(poly_mul(pa, pb), pc, env);
+        lemma_poly_eval_mul(pb, pc, env);
+        lemma_poly_eval_mul(pa, poly_mul(pb, pc), env);
+        let ea = poly_eval(pa, env);
+        let eb = poly_eval(pb, env);
+        let ec = poly_eval(pc, env);
+        assert((ea * eb) * ec == ea * (eb * ec)) by(nonlinear_arith);
+    }
+}
+
+///  Helper for mul_associative: sorted + identity.
+proof fn lemma_mul_assoc_helper(a: &ArithExpr, b: &ArithExpr, c: &ArithExpr)
+    ensures poly_mul(poly_mul(arith_to_poly(a), arith_to_poly(b)), arith_to_poly(c))
+        =~= poly_mul(arith_to_poly(a), poly_mul(arith_to_poly(b), arith_to_poly(c))),
+{
+    let pa = arith_to_poly(a);
+    let pb = arith_to_poly(b);
+    let pc = arith_to_poly(c);
+    lemma_arith_to_poly_wf(a);
+    lemma_arith_to_poly_wf(b);
+    lemma_arith_to_poly_wf(c);
+    lemma_poly_mul_wf(pa, pb);
+    lemma_poly_mul_wf(pb, pc);
+    lemma_poly_mul_wf(poly_mul(pa, pb), pc);
+    lemma_poly_mul_wf(pa, poly_mul(pb, pc));
+    lemma_mul_assoc_eval(a, b, c);
+    lemma_mul_vars_sorted(a, b);
+    lemma_mul_vars_sorted(b, c);
+    lemma_vars_sorted_mul(poly_mul(pa, pb), pc);
+    lemma_vars_sorted_mul(pa, poly_mul(pb, pc));
+    lemma_same_eval_same_poly(poly_mul(poly_mul(pa, pb), pc), poly_mul(pa, poly_mul(pb, pc)));
+}
+
+///  Helper for mul_distributes_left: eval part.
+proof fn lemma_mul_distrib_eval(a: &ArithExpr, b: &ArithExpr, c: &ArithExpr)
+    ensures forall |env: Seq<int>|
+        poly_eval(poly_mul(arith_to_poly(a), poly_add(arith_to_poly(b), arith_to_poly(c))), env)
+        == poly_eval(poly_add(poly_mul(arith_to_poly(a), arith_to_poly(b)), poly_mul(arith_to_poly(a), arith_to_poly(c))), env),
+{
+    let pa = arith_to_poly(a);
+    let pb = arith_to_poly(b);
+    let pc = arith_to_poly(c);
+    lemma_arith_to_poly_wf(a);
+    lemma_arith_to_poly_wf(b);
+    lemma_arith_to_poly_wf(c);
+    lemma_poly_add_wf(pb, pc);
+    lemma_poly_mul_wf(pa, pb);
+    lemma_poly_mul_wf(pa, pc);
+    assert forall |env: Seq<int>|
+        poly_eval(poly_mul(pa, poly_add(pb, pc)), env)
+            == poly_eval(poly_add(poly_mul(pa, pb), poly_mul(pa, pc)), env) by {
+        lemma_poly_eval_add(pb, pc, env);
+        lemma_poly_eval_mul(pa, poly_add(pb, pc), env);
+        lemma_poly_eval_mul(pa, pb, env);
+        lemma_poly_eval_mul(pa, pc, env);
+        lemma_poly_eval_add(poly_mul(pa, pb), poly_mul(pa, pc), env);
+        let ea = poly_eval(pa, env);
+        let eb = poly_eval(pb, env);
+        let ec = poly_eval(pc, env);
+        assert(ea * (eb + ec) == ea * eb + ea * ec) by(nonlinear_arith);
+    }
+}
+
+///  Helper for mul_distributes_left: sorted + identity.
+proof fn lemma_mul_distrib_helper(a: &ArithExpr, b: &ArithExpr, c: &ArithExpr)
+    ensures poly_mul(arith_to_poly(a), poly_add(arith_to_poly(b), arith_to_poly(c)))
+        =~= poly_add(poly_mul(arith_to_poly(a), arith_to_poly(b)), poly_mul(arith_to_poly(a), arith_to_poly(c))),
+{
+    let pa = arith_to_poly(a);
+    let pb = arith_to_poly(b);
+    let pc = arith_to_poly(c);
+    lemma_arith_to_poly_wf(a);
+    lemma_arith_to_poly_wf(b);
+    lemma_arith_to_poly_wf(c);
+    lemma_poly_add_wf(pb, pc);
+    lemma_poly_mul_wf(pa, poly_add(pb, pc));
+    lemma_poly_mul_wf(pa, pb);
+    lemma_poly_mul_wf(pa, pc);
+    lemma_poly_add_wf(poly_mul(pa, pb), poly_mul(pa, pc));
+    lemma_mul_distrib_eval(a, b, c);
+    lemma_arith_to_poly_vars_sorted(a);
+    lemma_arith_to_poly_vars_sorted(b);
+    lemma_arith_to_poly_vars_sorted(c);
+    lemma_vars_sorted_add(pb, pc);
+    lemma_vars_sorted_mul(pa, poly_add(pb, pc));
+    lemma_vars_sorted_mul(pa, pb);
+    lemma_vars_sorted_mul(pa, pc);
+    lemma_vars_sorted_add(poly_mul(pa, pb), poly_mul(pa, pc));
+    lemma_same_eval_same_poly(
+        poly_mul(pa, poly_add(pb, pc)),
+        poly_add(poly_mul(pa, pb), poly_mul(pa, pc)),
+    );
+}
+
 ///  Helper: two polynomials with same poly_eval have same normal form.
 proof fn lemma_same_eval_same_poly(
     pa: Seq<(int, Seq<nat>)>,
@@ -1615,33 +1731,7 @@ impl<const N: usize, const F: usize> Ring for GpuFixedPoint<N, F> {
     }
 
     proof fn axiom_mul_associative(a: Self, b: Self, c: Self) {
-        let pa = arith_to_poly(&a.expr);
-        let pb = arith_to_poly(&b.expr);
-        let pc = arith_to_poly(&c.expr);
-        lemma_arith_to_poly_wf(&a.expr);
-        lemma_arith_to_poly_wf(&b.expr);
-        lemma_arith_to_poly_wf(&c.expr);
-        lemma_poly_mul_wf(pa, pb);
-        lemma_poly_mul_wf(pb, pc);
-        lemma_poly_mul_wf(poly_mul(pa, pb), pc);
-        lemma_poly_mul_wf(pa, poly_mul(pb, pc));
-        assert forall |env: Seq<int>|
-            poly_eval(poly_mul(poly_mul(pa, pb), pc), env)
-                == poly_eval(poly_mul(pa, poly_mul(pb, pc)), env) by {
-            lemma_poly_eval_mul(pa, pb, env);
-            lemma_poly_eval_mul(poly_mul(pa, pb), pc, env);
-            lemma_poly_eval_mul(pb, pc, env);
-            lemma_poly_eval_mul(pa, poly_mul(pb, pc), env);
-            let ea = poly_eval(pa, env);
-            let eb = poly_eval(pb, env);
-            let ec = poly_eval(pc, env);
-            assert((ea * eb) * ec == ea * (eb * ec)) by(nonlinear_arith);
-        }
-        lemma_mul_vars_sorted(&a.expr, &b.expr);
-        lemma_mul_vars_sorted(&b.expr, &c.expr);
-        lemma_vars_sorted_mul(poly_mul(pa, pb), pc);
-        lemma_vars_sorted_mul(pa, poly_mul(pb, pc));
-        lemma_same_eval_same_poly(poly_mul(poly_mul(pa, pb), pc), poly_mul(pa, poly_mul(pb, pc)));
+        lemma_mul_assoc_helper(&a.expr, &b.expr, &c.expr);
         reveal_with_fuel(arith_to_poly, 3);
     }
 
@@ -1682,42 +1772,7 @@ impl<const N: usize, const F: usize> Ring for GpuFixedPoint<N, F> {
     }
 
     proof fn axiom_mul_distributes_left(a: Self, b: Self, c: Self) {
-        let pa = arith_to_poly(&a.expr);
-        let pb = arith_to_poly(&b.expr);
-        let pc = arith_to_poly(&c.expr);
-        lemma_arith_to_poly_wf(&a.expr);
-        lemma_arith_to_poly_wf(&b.expr);
-        lemma_arith_to_poly_wf(&c.expr);
-        lemma_poly_add_wf(pb, pc);
-        lemma_poly_mul_wf(pa, poly_add(pb, pc));
-        lemma_poly_mul_wf(pa, pb);
-        lemma_poly_mul_wf(pa, pc);
-        lemma_poly_add_wf(poly_mul(pa, pb), poly_mul(pa, pc));
-        assert forall |env: Seq<int>|
-            poly_eval(poly_mul(pa, poly_add(pb, pc)), env)
-                == poly_eval(poly_add(poly_mul(pa, pb), poly_mul(pa, pc)), env) by {
-            lemma_poly_eval_add(pb, pc, env);
-            lemma_poly_eval_mul(pa, poly_add(pb, pc), env);
-            lemma_poly_eval_mul(pa, pb, env);
-            lemma_poly_eval_mul(pa, pc, env);
-            lemma_poly_eval_add(poly_mul(pa, pb), poly_mul(pa, pc), env);
-            let ea = poly_eval(pa, env);
-            let eb = poly_eval(pb, env);
-            let ec = poly_eval(pc, env);
-            assert(ea * (eb + ec) == ea * eb + ea * ec) by(nonlinear_arith);
-        }
-        lemma_arith_to_poly_vars_sorted(&a.expr);
-        lemma_arith_to_poly_vars_sorted(&b.expr);
-        lemma_arith_to_poly_vars_sorted(&c.expr);
-        lemma_vars_sorted_add(pb, pc);
-        lemma_vars_sorted_mul(pa, poly_add(pb, pc));
-        lemma_vars_sorted_mul(pa, pb);
-        lemma_vars_sorted_mul(pa, pc);
-        lemma_vars_sorted_add(poly_mul(pa, pb), poly_mul(pa, pc));
-        lemma_same_eval_same_poly(
-            poly_mul(pa, poly_add(pb, pc)),
-            poly_add(poly_mul(pa, pb), poly_mul(pa, pc)),
-        );
+        lemma_mul_distrib_helper(&a.expr, &b.expr, &c.expr);
         reveal_with_fuel(arith_to_poly, 3);
     }
 
@@ -2708,9 +2763,11 @@ proof fn lemma_non_v0_eval_independent(
     lemma_non_v0_eval_independent(pt, env1, env2, v0);
     if p[0].1.len() > 0 && p[0].1[0] == v0 {
         //  p[0] is a v0-term. It's in the filter. Non-v0 part doesn't include it.
-        //  poly_eval(p) = p[0] eval + poly_eval(pt)
-        //  poly_eval(filter(p)) = p[0] eval + poly_eval(filter(pt))
-        //  Difference = poly_eval(pt) - poly_eval(filter(pt)) [same at both envs by IH]
+        //  filter(p) = [p[0]] + filter(pt). Differences cancel p[0] term.
+        let fp = poly_filter_first_var(p, v0);
+        let fpt = poly_filter_first_var(pt, v0);
+        assert(fp =~= seq![p[0]] + fpt);
+        assert(fp.subrange(1, fp.len() as int) =~= fpt) by { lemma_poly_filter_len(pt, v0); }
     } else {
         //  p[0] is NOT a v0-term. It's NOT in the filter. Non-v0 part includes it.
         //  poly_eval(p) = p[0] eval + poly_eval(pt)
@@ -2887,6 +2944,19 @@ proof fn lemma_vars_sorted_factor(p: Seq<(int, Seq<nat>)>)
 }
 
 ///  In sorted vars with first element > v0, no element equals v0.
+///  Helper: in a sorted sequence, all elements >= first element.
+proof fn lemma_sorted_seq_ge_first(s: Seq<nat>, k: int)
+    requires
+        s.len() > 0, 0 <= k < s.len(),
+        forall |j: int| #![trigger s[j]] 0 < j < s.len() ==> s[j-1] <= s[j],
+    ensures s[k] >= s[0],
+    decreases k,
+{
+    if k == 0 {} else {
+        lemma_sorted_seq_ge_first(s, k - 1);
+    }
+}
+
 proof fn lemma_sorted_vars_no_v0(vars: Seq<nat>, v0: nat)
     requires
         vars.len() > 0, vars[0] > v0,
@@ -2894,15 +2964,8 @@ proof fn lemma_sorted_vars_no_v0(vars: Seq<nat>, v0: nat)
     ensures forall |j: int| 0 <= j < vars.len() ==> vars[j] != v0,
 {
     assert forall |j: int| 0 <= j < vars.len() implies vars[j] != v0 by {
-        //  vars[0] > v0. For j > 0: vars[j] >= vars[j-1] >= ... >= vars[0] > v0.
-        //  So vars[j] > v0 ≠ v0.
-        if j == 0 {} else {
-            //  By induction on j: vars[j] >= vars[0] > v0.
-            //  Verus doesn't have loop induction in assert forall, but Z3
-            //  can chain: vars[j] >= vars[j-1] >= ... >= vars[0] > v0.
-            //  For small j Z3 handles this. For large j, might need a helper.
-            //  In practice, var tuples are short (< 10 elements).
-        }
+        lemma_sorted_seq_ge_first(vars, j);
+        //  vars[j] >= vars[0] > v0, so vars[j] > v0, so vars[j] != v0.
     }
 }
 
@@ -3271,13 +3334,10 @@ proof fn lemma_wf_poly_nonzero_eval(p: Seq<(int, Seq<nat>)>)
                 //  All terms have first var >= v0 (v0 is the smallest first var in p).
                 assert forall |i: int| 0 <= i < p.len() && p[i].1.len() > 0
                     implies p[i].1[0] >= v0 by {
-                    //  p is wf. p[0].1[0] = v0. For i > 0: vars_lt(p[0].1, p[i].1).
-                    //  If p[i].1[0] < v0: vars_lt(p[i].1, p[0].1) (smaller first element).
-                    //  But vars_lt(p[0].1, p[i].1) (from wf). Contradicts asymmetry.
                     if i > 0 {
+                        assert(vars_lt(p[0].1, p[i].1));
                         if p[i].1[0] < v0 {
-                            //  vars_lt([smaller, ...], [v0, ...]) → true (smaller < v0)
-                            //  But we need vars_lt(p[0].1, p[i].1) from wf. Contradiction with asymmetry.
+                            lemma_vars_lt_asymm(p[0].1, p[i].1);
                         }
                     }
                 }
@@ -3312,29 +3372,80 @@ proof fn lemma_wf_poly_nonzero_eval(p: Seq<(int, Seq<nat>)>)
                     if i < env_fac.len() { env_fac[i] }
                     else if i == v0 as int { 1int } else { 0int })
             };
-            lemma_poly_eval_factor(p, env_v01, v0);
+            lemma_poly_eval_factor(p_v0, env_v01, v0);
             if poly_eval(p_fac, env_v01) != 0int {
-                assert(poly_eval(p, env_v01) != 0int) by(nonlinear_arith)
-                    requires poly_eval(p, env_v01) == 1int * poly_eval(p_fac, env_v01),
+                //  poly_eval(p_v0, env_v01) = 1 * poly_eval(p_fac, env_v01) != 0.
+                //  S = 0 (v0-independent, was 0 at env_fac). At env_v01: still 0.
+                //  poly_eval(p, env_v01) = poly_eval(p_v0, env_v01) + S = non-zero + 0 != 0.
+                //  For now: assert p_v0 is non-zero, then p = p_v0 + 0 is non-zero.
+                assert(poly_eval(p_v0, env_v01) != 0int) by(nonlinear_arith)
+                    requires poly_eval(p_v0, env_v01) == 1int * poly_eval(p_fac, env_v01),
                         poly_eval(p_fac, env_v01) != 0int;
-            } else {
-                let env_v02 = if (v0 as int) < env_fac.len() {
-                    env_fac.update(v0 as int, 2int)
+                //  Need: poly_eval(p, env_v01) = poly_eval(p_v0, env_v01) + S, S = 0.
+                //  This requires lemma_non_v0_eval_independent to show S is same at env_fac and env_v01.
+                //  At env_fac: S = poly_eval(p, env_fac) - poly_eval(p_v0, env_fac) = 0 - 0 = 0.
+                //  At env_v01: S = poly_eval(p, env_v01) - poly_eval(p_v0, env_v01).
+                //  By v0-independence: S_env_v01 = S_env_fac = 0.
+                //  So poly_eval(p, env_v01) = poly_eval(p_v0, env_v01) != 0.
+                //  poly_eval(p, env_v01) != 0 because:
+                //  poly_eval(p_v0, env_v01) = 1 * poly_eval(p_fac, env_v01) != 0
+                //  S (non-v0 terms) = 0 at env_fac and is v0-independent → 0 at env_v01 too.
+                //  So poly_eval(p, env_v01) = poly_eval(p_v0, env_v01) + 0 != 0.
+                //
+                //  Z3 can try to verify this directly:
+                assert(poly_eval(p_v0, env_v01) != 0int) by(nonlinear_arith)
+                    requires poly_eval(p_v0, env_v01) == 1int * poly_eval(p_fac, env_v01),
+                        poly_eval(p_fac, env_v01) != 0int;
+                //  For the full poly_eval(p, env_v01): it includes non-v0 terms too.
+                //  We'll check if Z3 can prove it != 0. If not, we need the v0-independence proof.
+                //  Use v0-independence to show S = 0 at env_v01.
+                //  Construct env_zero: same as env_v01 but with v0 = 0.
+                //  Then env_zero and env_v01 differ only at v0, have same length.
+                let env_zero = if (v0 as int) < env_v01.len() {
+                    env_v01.update(v0 as int, 0int)
+                } else { env_v01 };
+                assert(env_zero.len() == env_v01.len());
+                assert forall |i: int| 0 <= i < env_zero.len() && i != v0 as int
+                    implies env_zero[i] == env_v01[i] by {}
+                assert forall |i: int| 0 <= i < p.len() && p[i].1.len() > 0
+                    implies p[i].1[0] >= v0 by {
+                    if i > 0 {
+                        assert(vars_lt(p[0].1, p[i].1));
+                        if p[i].1[0] < v0 { lemma_vars_lt_asymm(p[0].1, p[i].1); }
+                    }
+                }
+                lemma_non_v0_eval_independent(p, env_zero, env_v01, v0);
+                //  S at env_zero == S at env_v01.
+                //  At env_zero: v0 = 0, so poly_eval(p_v0, env_zero) = 0.
+                lemma_poly_eval_factor(p_v0, env_zero, v0);
+                assert(poly_eval(p_v0, env_zero) == 0int) by(nonlinear_arith)
+                    requires poly_eval(p_v0, env_zero) == 0int * poly_eval(p_fac, env_zero);
+                //  S at env_zero = poly_eval(p, env_zero) - poly_eval(p_v0, env_zero)
+                //               = poly_eval(p, env_zero) - 0 = poly_eval(p, env_zero).
+                //  S at env_v01 = poly_eval(p, env_v01) - poly_eval(p_v0, env_v01).
+                //  By v0-independence: S_zero == S_v01.
+                //  poly_eval(p, env_zero) == poly_eval(p, env_v01) - poly_eval(p_v0, env_v01).
+                //
+                //  Also: at env_zero, p is evaluated with v0=0. Is poly_eval(p, env_zero) == 0?
+                //  We tried env2 = env_ih[v0:=0] earlier and it was 0. But env_zero is
+                //  env_v01[v0:=0] which may have different non-v0 values than env_ih.
+                //  So poly_eval(p, env_zero) might not be 0.
+                //
+                //  BUT: poly_eval(p, env_zero) = poly_eval(p_v0, env_zero) + S_zero = 0 + S_zero = S_zero.
+                //  And S_zero = S_v01. So poly_eval(p, env_v01) = poly_eval(p_v0, env_v01) + S_zero.
+                //  poly_eval(p_v0, env_v01) != 0 (proved above).
+                //  If S_zero == 0: poly_eval(p, env_v01) = poly_eval(p_v0, env_v01) != 0. DONE!
+                //  If S_zero != 0: poly_eval(p, env_zero) = S_zero != 0. ALSO DONE! (env_zero is witness)
+                //
+                //  In EITHER case, we have an env where poly_eval(p, ...) != 0!
+                if poly_eval(p, env_zero) != 0int {
+                    //  env_zero is our witness!
                 } else {
-                    Seq::new((v0 + 1) as nat, |i: int|
-                        if i < env_fac.len() { env_fac[i] }
-                        else if i == v0 as int { 2int } else { 0int })
-                };
-                lemma_poly_eval_factor(p, env_v02, v0);
-                if poly_eval(p_fac, env_v02) != 0int {
-                    assert(poly_eval(p, env_v02) != 0int) by(nonlinear_arith)
-                        requires poly_eval(p, env_v02) == 2int * poly_eval(p_fac, env_v02),
-                            poly_eval(p_fac, env_v02) != 0int;
-                } else {
-                    //  p_fac is zero at v0 = 0 → NO, it's NON-zero at v0=0 (env_fac).
-                    //  p_fac(v0=0) != 0, p_fac(v0=1) == 0, p_fac(v0=2) == 0.
-                    //  Non-zero at 0, zero at 1 and 2. Needs root bound for more roots.
-                    assert(false);  // root bound for degree >= 2
+                    //  poly_eval(p, env_zero) == 0 → S_zero == 0.
+                    //  poly_eval(p, env_v01) = poly_eval(p_v0, env_v01) + S_zero
+                    //                        = poly_eval(p_v0, env_v01) + 0
+                    //                        = poly_eval(p_v0, env_v01) != 0. DONE!
+                    assert(poly_eval(p, env_v01) != 0int);
                 }
             }
         }
