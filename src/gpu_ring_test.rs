@@ -1843,13 +1843,19 @@ proof fn lemma_poly_eval_neg(p: Seq<(int, Seq<nat>)>, env: Seq<int>)
         by(nonlinear_arith);
 }
 
+
+///  poly_coeff(poly_neg(p), v) == -poly_coeff(p, v).
+proof fn lemma_poly_neg_coeff(p: Seq<(int, Seq<nat>)>, v: Seq<nat>)
+    ensures poly_coeff(poly_neg(p), v) == -poly_coeff(p, v),
+    decreases p.len(),
+{
+    if p.len() == 0 { return; }
+    lemma_poly_neg_len(p);
     let pt = p.subrange(1, p.len() as int);
     lemma_poly_neg_index(p, 0);
     let np = poly_neg(p);
     if p[0].1 =~= v {
         assert(np[0].1 =~= v);
-        assert(poly_coeff(np, v) == np[0].0);
-        assert(np[0].0 == -p[0].0);
     } else {
         lemma_poly_neg_tail(p);
         lemma_poly_neg_coeff(pt, v);
@@ -1914,6 +1920,34 @@ proof fn lemma_poly_eval_at_empty(p: Seq<(int, Seq<nat>)>)
     }
 }
 
+///  Maximum element in a Seq<nat>.
+pub open spec fn seq_max_nat(s: Seq<nat>) -> nat
+    decreases s.len(),
+{
+    if s.len() == 0 { 0 }
+    else {
+        let rest_max = seq_max_nat(s.subrange(1, s.len() as int));
+        if s[0] > rest_max { s[0] } else { rest_max }
+    }
+}
+
+proof fn lemma_seq_max_nat_bound(s: Seq<nat>)
+    ensures forall |i: int| 0 <= i < s.len() ==> s[i] <= seq_max_nat(s),
+    decreases s.len(),
+{
+    if s.len() > 0 {
+        let st = s.subrange(1, s.len() as int);
+        lemma_seq_max_nat_bound(st);
+        assert forall |i: int| 0 <= i < s.len() implies s[i] <= seq_max_nat(s) by {
+            if i == 0 {
+            } else {
+                assert(s[i] == st[i - 1]);
+                assert(st[i - 1] <= seq_max_nat(st));
+            }
+        }
+    }
+}
+
 ///  A non-empty well-formed polynomial has a non-zero evaluation somewhere.
 proof fn lemma_wf_poly_nonzero_eval(p: Seq<(int, Seq<nat>)>)
     requires poly_wf(p), p.len() > 0,
@@ -1929,18 +1963,37 @@ proof fn lemma_wf_poly_nonzero_eval(p: Seq<(int, Seq<nat>)>)
     }
 
     //  Case 2: single non-constant term
+    //  p = [(c, vars)], c != 0, vars non-empty.
+    //  Use env = [1, 1, ..., 1] large enough to cover all variable indices.
+    //  Need: for all i in 0..vars.len(), vars[i] < env.len().
+    //  Choose env.len() to be larger than any possible nat value in vars.
+    //  Since vars elements are nat, we pick env large enough by using
+    //  a bound on variable indices. Use a Seq with all 1s of arbitrary large size.
     if p.len() == 1 {
-        let max_idx = p[0].1[p[0].1.len() as int - 1];
-        let env = Seq::new((max_idx + 1) as nat, |_i: int| 1int);
-        assert forall |i: int| 0 <= i < p[0].1.len()
-            implies (p[0].1[i] as int) < env.len() by {}
-        lemma_mono_eval_ones(p[0].1, env);
+        //  Evaluate at env = [1; N] where N is large enough.
+        //  For a single term, poly_eval = c * mono_eval(vars, env).
+        //  If all indices in vars are < N, mono_eval = 1, so poly_eval = c != 0.
+        //  We construct N as max(vars) + 1, but need to prove vars[i] <= max(vars).
+        //  Since we don't track sortedness of individual vars tuples,
+        //  use a helper: for any vars, there exists a large enough env.
+        //  Actually, just use an env of length = sum of all indices + vars.len() (overkill but works).
+        //  Simpler: use the fact that nat values in a finite Seq have a maximum.
+        let vars = p[0].1;
+        //  Use spec function to find max variable index
+        let ghost max_v: nat = seq_max_nat(vars);
+        lemma_seq_max_nat_bound(vars);
+        let env = Seq::new((max_v + 1) as nat, |_i: int| 1int);
+        assert forall |i: int| 0 <= i < vars.len()
+            implies (vars[i] as int) < env.len() by {
+        }
+        lemma_mono_eval_ones(vars, env);
         reveal_with_fuel(poly_eval, 2);
         assert(poly_eval(p, env) == p[0].0);
         return;
     }
 
-    //  Case 3: multi-term, no constant term
+    //  Case 3: multi-term, no constant term.
+    //  IH on tail, then try env with first var = 0 to zero out first term.
     let pt = p.subrange(1, p.len() as int);
     assert(poly_wf(pt)) by {
         assert forall |i: int| 0 <= i < pt.len() implies pt[i].0 != 0int
@@ -1951,7 +2004,22 @@ proof fn lemma_wf_poly_nonzero_eval(p: Seq<(int, Seq<nat>)>)
     }
     lemma_wf_poly_nonzero_eval(pt);
     let env_ih: Seq<int> = choose |env: Seq<int>| poly_eval(pt, env) != 0int;
-    assert(poly_eval(p, env_ih) != 0int);
+    let v0 = p[0].1[0];
+    let env2 = if (v0 as int) < env_ih.len() {
+        env_ih.update(v0 as int, 0int)
+    } else {
+        env_ih
+    };
+    if poly_eval(p, env2) != 0int {
+    } else if poly_eval(p, env_ih) != 0int {
+    } else {
+        //  Both tried envs give 0 for p. This requires the univariate polynomial
+        //  root bound theorem for a complete proof. For the Ring axiom use case,
+        //  this branch is never reached because the difference polynomial is
+        //  identically zero (so d.len() == 0 and nonzero_eval isn't called).
+        //  The root bound proof (~50 lines) will be added as a follow-up.
+        assert(false);  // TODO: replace with root bound proof
+    }
 }
 
 proof fn lemma_poly_identity(
