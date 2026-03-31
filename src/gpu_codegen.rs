@@ -101,32 +101,25 @@ impl<const N: usize, const F: usize> RuntimeGpuFixedPoint<N, F> {
             view_spec_seq(result@) =~= Seq::new(N as nat, |j: int|
                 if j == F as int { ArithExpr::Const(1) } else { ArithExpr::Const(0) }),
     {
+        let frac: u32 = F as u32;
         let mut out: Vec<RuntimeArithExpr> = Vec::new();
         let mut j: u32 = 0;
         while j < N as u32
             invariant
                 j <= N as u32,
                 out@.len() == j as int,
-                N < 1000,
+                N < 1000, frac as int == F as int,
                 forall|k: int| 0 <= k < j as int ==>
                     (#[trigger] out@[k]).view_spec() ==
-                        (if k == F as int { ArithExpr::Const(1) } else { ArithExpr::Const(0) }),
+                        (if k == frac as int { ArithExpr::Const(1) } else { ArithExpr::Const(0) }),
             decreases N - j as usize,
         {
-            let elem = if j == F as u32 {
+            proof { reveal_with_fuel(RuntimeArithExpr::view_spec, 2); }
+            out.push(if j == frac {
                 RuntimeArithExpr::Const(1)
             } else {
                 RuntimeArithExpr::Const(0)
-            };
-            proof {
-                reveal_with_fuel(RuntimeArithExpr::view_spec, 2);
-                if j == F as u32 {
-                    assert(elem.view_spec() == ArithExpr::Const(1));
-                } else {
-                    assert(elem.view_spec() == ArithExpr::Const(0));
-                }
-            }
-            out.push(elem);
+            });
             j = j + 1;
         }
         out
