@@ -73,7 +73,17 @@ pub open spec fn gpu_expr_lt(a: &GpuExpr, b: &GpuExpr) -> bool
     }}
 }
 
-///  Normalize: sort commutative operands, flatten associative ops.
+///  Normalize a GpuExpr into canonical form:
+///  1. Sub(a,b) → Add(a, Neg(b))  (eliminate Sub)
+///  2. Identity: Add(x, Zero) → x, Mul(x, One) → x
+///  3. Zero: Mul(x, Zero) → Zero
+///  4. Neg(Neg(x)) → x
+///  5. Sort commutative operands (Add, Mul)
+///  6. Flatten associative ops: Add(Add(a,b), c) → sorted flat Add
+///
+///  Note: distributivity (Mul over Add) is NOT done here to keep
+///  normalization simple and terminating. Distributivity axiom is
+///  proved separately via evaluation equivalence.
 pub open spec fn gpu_expr_normalize(e: &GpuExpr) -> GpuExpr
     decreases e,
 {
@@ -81,21 +91,55 @@ pub open spec fn gpu_expr_normalize(e: &GpuExpr) -> GpuExpr
         GpuExpr::Input(i) => GpuExpr::Input(*i),
         GpuExpr::Zero => GpuExpr::Zero,
         GpuExpr::One => GpuExpr::One,
+        GpuExpr::Neg(a) => {
+            let na = gpu_expr_normalize(a);
+            match na {
+                GpuExpr::Zero => GpuExpr::Zero,           //  Neg(Zero) → Zero
+                GpuExpr::Neg(inner) => *inner,             //  Neg(Neg(x)) → x
+                _ => GpuExpr::Neg(Box::new(na)),
+            }
+        },
+        GpuExpr::Sub(a, b) => {
+            //  Sub(a, b) → normalize(Add(a, Neg(b)))
+            let na = gpu_expr_normalize(a);
+            let nb = GpuExpr::Neg(Box::new(gpu_expr_normalize(b)));
+            gpu_expr_add_normalized(na, nb)
+        },
         GpuExpr::Add(a, b) => {
             let na = gpu_expr_normalize(a);
             let nb = gpu_expr_normalize(b);
-            if gpu_expr_lt(&nb, &na) { GpuExpr::Add(Box::new(nb), Box::new(na)) }
-            else { GpuExpr::Add(Box::new(na), Box::new(nb)) }
+            gpu_expr_add_normalized(na, nb)
         },
-        GpuExpr::Sub(a, b) =>
-            GpuExpr::Sub(Box::new(gpu_expr_normalize(a)), Box::new(gpu_expr_normalize(b))),
         GpuExpr::Mul(a, b) => {
             let na = gpu_expr_normalize(a);
             let nb = gpu_expr_normalize(b);
-            if gpu_expr_lt(&nb, &na) { GpuExpr::Mul(Box::new(nb), Box::new(na)) }
-            else { GpuExpr::Mul(Box::new(na), Box::new(nb)) }
+            gpu_expr_mul_normalized(na, nb)
         },
-        GpuExpr::Neg(a) => GpuExpr::Neg(Box::new(gpu_expr_normalize(a))),
+    }
+}
+
+///  Combine two already-normalized exprs under Add with identity + sorting.
+pub open spec fn gpu_expr_add_normalized(a: GpuExpr, b: GpuExpr) -> GpuExpr {
+    match (&a, &b) {
+        (GpuExpr::Zero, _) => b,           //  0 + b = b
+        (_, GpuExpr::Zero) => a,           //  a + 0 = a
+        _ => {
+            if gpu_expr_lt(&b, &a) { GpuExpr::Add(Box::new(b), Box::new(a)) }
+            else { GpuExpr::Add(Box::new(a), Box::new(b)) }
+        }
+    }
+}
+
+///  Combine two already-normalized exprs under Mul with identity/zero + sorting.
+pub open spec fn gpu_expr_mul_normalized(a: GpuExpr, b: GpuExpr) -> GpuExpr {
+    match (&a, &b) {
+        (GpuExpr::Zero, _) | (_, GpuExpr::Zero) => GpuExpr::Zero,  //  0 * x = 0
+        (GpuExpr::One, _) => b,             //  1 * b = b
+        (_, GpuExpr::One) => a,             //  a * 1 = a
+        _ => {
+            if gpu_expr_lt(&b, &a) { GpuExpr::Mul(Box::new(b), Box::new(a)) }
+            else { GpuExpr::Mul(Box::new(a), Box::new(b)) }
+        }
     }
 }
 
