@@ -609,8 +609,7 @@ proof fn lemma_poly_add_coeff_wf(
                 let result = seq![(c, p[0].1)] + poly_add(pt, qt);
                 assert(poly_add(p, q) =~= result);
                 assert(!(result[0].1 =~= v));
-                //  poly_coeff(result, v) = poly_coeff(poly_add(pt,qt), v) = poly_coeff(pt,v) + poly_coeff(qt,v) ✓
-                assert(poly_coeff(result, v) == poly_coeff(poly_add(pt, qt), v));
+                assert(result.subrange(1, result.len() as int) =~= poly_add(pt, qt));
             }
         }
     } else if vars_lt(p[0].1, q[0].1) {
@@ -653,9 +652,7 @@ proof fn lemma_poly_add_coeff_wf(
         } else {
             //  head p[0].1 ≠ v
             assert(!(result[0].1 =~= v));
-            //  poly_coeff(result, v) = poly_coeff(poly_add(pt,q), v) = poly_coeff(pt,v) + poly_coeff(q,v)
-            assert(poly_coeff(result, v) == poly_coeff(poly_add(pt, q), v));
-            //  poly_coeff(p, v) = poly_coeff(pt, v) since p[0].1 ≠ v
+            assert(result.subrange(1, result.len() as int) =~= poly_add(pt, q));
             assert(poly_coeff(p, v) == poly_coeff(pt, v));
             //  poly_coeff(result, v) = poly_coeff(pt, v) + poly_coeff(q, v) = poly_coeff(p, v) + poly_coeff(q, v) ✓
         }
@@ -701,9 +698,7 @@ proof fn lemma_poly_add_coeff_wf(
         } else {
             //  head q[0].1 ≠ v
             assert(!(result[0].1 =~= v));
-            //  poly_coeff(result, v) = poly_coeff(poly_add(p,qt), v) = poly_coeff(p,v) + poly_coeff(qt,v)
-            assert(poly_coeff(result, v) == poly_coeff(poly_add(p, qt), v));
-            //  poly_coeff(q, v) = poly_coeff(qt, v) since q[0].1 ≠ v
+            assert(result.subrange(1, result.len() as int) =~= poly_add(p, qt));
             assert(poly_coeff(q, v) == poly_coeff(qt, v));
             //  poly_coeff(result, v) = poly_coeff(p, v) + poly_coeff(qt, v) = poly_coeff(p, v) + poly_coeff(q, v) ✓
         }
@@ -1079,6 +1074,195 @@ proof fn lemma_poly_add_inverse(p: Seq<(int, Seq<nat>)>)
         lemma_poly_neg_len(p);
         lemma_poly_neg_tail(p);
         lemma_poly_add_inverse(p.subrange(1, p.len() as int));
+    }
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  arith_to_poly produces well-formed output
+//  ══════════════════════════════════════════════════════════════
+
+proof fn lemma_arith_to_poly_wf(e: &ArithExpr)
+    ensures poly_wf(arith_to_poly(e)),
+    decreases e,
+{
+    match e {
+        ArithExpr::Const(c) => {
+            if *c == 0int {
+                assert(arith_to_poly(e) =~= seq![]);
+            } else {
+                let p = seq![(*c, Seq::<nat>::empty())];
+                assert(arith_to_poly(e) =~= p);
+                assert forall |i: int| 0 <= i < p.len() implies p[i].0 != 0int by {}
+                assert forall |i: int, j: int| 0 <= i < j < p.len()
+                    implies vars_lt(p[i].1, p[j].1) by {}
+            }
+        },
+        ArithExpr::Var(n) => {
+            let p = seq![(1int, seq![*n])];
+            assert(arith_to_poly(e) =~= p);
+            assert forall |i: int| 0 <= i < p.len() implies p[i].0 != 0int by {}
+            assert forall |i: int, j: int| 0 <= i < j < p.len()
+                implies vars_lt(p[i].1, p[j].1) by {}
+        },
+        ArithExpr::Add(a, b) => {
+            lemma_arith_to_poly_wf(a);
+            lemma_arith_to_poly_wf(b);
+            lemma_poly_add_wf(arith_to_poly(a), arith_to_poly(b));
+        },
+        ArithExpr::Sub(a, b) => {
+            lemma_arith_to_poly_wf(a);
+            lemma_arith_to_poly_wf(b);
+            lemma_poly_neg_wf(arith_to_poly(b));
+            lemma_poly_add_wf(arith_to_poly(a), poly_neg(arith_to_poly(b)));
+        },
+        ArithExpr::Mul(a, b) => {
+            lemma_arith_to_poly_wf(a);
+            lemma_arith_to_poly_wf(b);
+            lemma_poly_mul_wf(arith_to_poly(a), arith_to_poly(b));
+        },
+        _ => {
+            //  Non-ring variants → empty poly, trivially wf
+        },
+    }
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  GpuFixedPoint Ring implementation
+//  ══════════════════════════════════════════════════════════════
+
+pub struct GpuFixedPoint<const N: usize, const F: usize> {
+    pub expr: ArithExpr,
+}
+
+impl<const N: usize, const F: usize> Equivalence for GpuFixedPoint<N, F> {
+    open spec fn eqv(self, other: Self) -> bool {
+        arith_to_poly(&self.expr) =~= arith_to_poly(&other.expr)
+    }
+
+    proof fn axiom_eqv_reflexive(a: Self) {}
+    proof fn axiom_eqv_symmetric(a: Self, b: Self) {}
+    proof fn axiom_eqv_transitive(a: Self, b: Self, c: Self) {}
+    proof fn axiom_eq_implies_eqv(a: Self, b: Self) {}
+}
+
+impl<const N: usize, const F: usize> AdditiveCommutativeMonoid for GpuFixedPoint<N, F> {
+    open spec fn zero() -> Self {
+        GpuFixedPoint { expr: ArithExpr::Const(0) }
+    }
+
+    open spec fn add(self, other: Self) -> Self {
+        GpuFixedPoint { expr: ArithExpr::Add(Box::new(self.expr), Box::new(other.expr)) }
+    }
+
+    proof fn axiom_add_commutative(a: Self, b: Self) {
+        let pa = arith_to_poly(&a.expr);
+        let pb = arith_to_poly(&b.expr);
+        lemma_poly_add_comm(pa, pb);
+    }
+
+    proof fn axiom_add_associative(a: Self, b: Self, c: Self) {
+        lemma_arith_to_poly_wf(&a.expr);
+        lemma_arith_to_poly_wf(&b.expr);
+        lemma_arith_to_poly_wf(&c.expr);
+        let pa = arith_to_poly(&a.expr);
+        let pb = arith_to_poly(&b.expr);
+        let pc = arith_to_poly(&c.expr);
+        lemma_poly_add_wf(pa, pb);
+        lemma_poly_add_assoc(pa, pb, pc);
+    }
+
+    proof fn axiom_add_zero_right(a: Self) {
+        //  arith_to_poly(Const(0)) = [], poly_add(pa, []) = pa
+    }
+
+    proof fn axiom_add_congruence_left(a: Self, b: Self, c: Self) {}
+}
+
+impl<const N: usize, const F: usize> AdditiveGroup for GpuFixedPoint<N, F> {
+    open spec fn neg(self) -> Self {
+        GpuFixedPoint {
+            expr: ArithExpr::Sub(Box::new(ArithExpr::Const(0)), Box::new(self.expr)),
+        }
+    }
+
+    open spec fn sub(self, other: Self) -> Self {
+        GpuFixedPoint {
+            expr: ArithExpr::Sub(Box::new(self.expr), Box::new(other.expr)),
+        }
+    }
+
+    proof fn axiom_add_inverse_right(a: Self) {
+        let pa = arith_to_poly(&a.expr);
+        lemma_poly_add_inverse(pa);
+    }
+
+    proof fn axiom_sub_is_add_neg(a: Self, b: Self) {
+        //  sub(a,b) = Sub(a, b) → poly_add(pa, poly_neg(pb))
+        //  add(a, neg(b)) = Add(a, Sub(0, b)) → poly_add(pa, poly_add([], poly_neg(pb)))
+        //                                      = poly_add(pa, poly_neg(pb))  ✓
+    }
+
+    proof fn axiom_neg_congruence(a: Self, b: Self) {}
+}
+
+impl<const N: usize, const F: usize> GpuFixedPoint<N, F> {
+    pub open spec fn from_buffer(buf: nat) -> Self {
+        GpuFixedPoint { expr: ArithExpr::Var(buf) }
+    }
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  Well-formedness preservation: neg, insert, mono_mul, mul
+//  ══════════════════════════════════════════════════════════════
+
+proof fn lemma_poly_neg_wf(p: Seq<(int, Seq<nat>)>)
+    requires poly_wf(p),
+    ensures poly_wf(poly_neg(p)),
+    decreases p.len(),
+{
+    if p.len() == 0 { return; }
+    let pt = p.subrange(1, p.len() as int);
+    assert(poly_wf(pt)) by {
+        assert forall |i: int| 0 <= i < pt.len() implies pt[i].0 != 0int by { assert(pt[i] == p[i+1]); }
+        assert forall |i: int, j: int| 0 <= i < j < pt.len() implies vars_lt(pt[i].1, pt[j].1) by {
+            assert(pt[i] == p[i+1]); assert(pt[j] == p[j+1]);
+        }
+    }
+    lemma_poly_neg_wf(pt);
+    let np = poly_neg(p);
+    lemma_poly_neg_len(p);
+    //  Show: np[i] = (-p[i].0, p[i].1) for all i
+    //  np = [(-p[0].0, p[0].1)] + poly_neg(pt)
+    let npt = poly_neg(pt);
+    assert forall |i: int| 0 <= i < np.len() implies np[i].0 != 0int by {
+        if i == 0 {
+            assert(np[0] == (-p[0].0, p[0].1));
+        } else {
+            assert(np =~= seq![(-p[0].0, p[0].1)] + npt);
+            assert(np[i] == npt[i - 1]);
+        }
+    }
+    assert forall |i: int, j: int| 0 <= i < j < np.len()
+        implies vars_lt(np[i].1, np[j].1) by {
+        //  np[i].1 = p[i].1 (negation preserves vars)
+        if i == 0 {
+            assert(np[i].1 =~= p[0].1);
+        } else {
+            assert(np =~= seq![(-p[0].0, p[0].1)] + npt);
+            assert(np[i].1 =~= npt[i-1].1);
+            lemma_poly_neg_len(pt);
+            assert(npt[i-1].1 =~= pt[i-1].1);
+            assert(pt[i-1] == p[i]);
+        }
+        if j == 0 {} else {
+            assert(np =~= seq![(-p[0].0, p[0].1)] + npt);
+            assert(np[j].1 =~= npt[j-1].1);
+            lemma_poly_neg_len(pt);
+            assert(npt[j-1].1 =~= pt[j-1].1);
+            assert(pt[j-1] == p[j]);
+        }
+        assert(np[i].1 =~= p[i].1);
+        assert(np[j].1 =~= p[j].1);
     }
 }
 
