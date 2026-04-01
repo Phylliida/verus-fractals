@@ -20,3 +20,4 @@ pub mod gpu_fixed_point;
 pub mod gpu_ring_test;
 
 pub mod gpu_codegen;
+pub mod wgsl_codegen;

@@ -12,6 +12,7 @@ verus-interval-arithmetic = { path = "../verus-interval-arithmetic" }
 verus-fixed-point = { path = "../verus-fixed-point" }
 verus-cutedsl = { path = "../verus-cutedsl" }
 verus-mandelbrot = { path = "../verus-mandelbrot" }
+verus-cutedsl-codegen = { path = "../verus-cutedsl-codegen" }
 builtin = { package = "verus_builtin", path = "../verus/source/builtin" }
 
 [package.metadata.verus]
