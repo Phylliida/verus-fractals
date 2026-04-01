@@ -119,6 +119,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "verus-cutedsl-codegen"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "verus-fixed-point"
 version = "0.1.0"
 dependencies = [
@@ -135,6 +144,7 @@ dependencies = [
  "verus-algebra",
  "verus-bigint",
  "verus-cutedsl",
+ "verus-cutedsl-codegen",
  "verus-fixed-point",
  "verus-interval-arithmetic",
  "verus-mandelbrot",
