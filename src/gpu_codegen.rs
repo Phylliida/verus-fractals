@@ -13,8 +13,116 @@ use verus_algebra::traits::additive_commutative_monoid::AdditiveCommutativeMonoi
 use verus_algebra::traits::additive_group::AdditiveGroup;
 use verus_algebra::traits::ring::Ring;
 use crate::gpu_ring_test::{GpuFixedPoint, poly_add, poly_neg, poly_insert, poly_mul, mono_mul_poly, arith_to_poly, vars_lt, vars_merge, expr_coeff_bound, lemma_expr_coeff_bound_nonneg, lemma_arith_to_poly_coeff_bound, poly_sum_abs, lemma_arith_to_poly_sum_abs, lemma_poly_sum_abs_nonneg, lemma_poly_sum_abs_bounds_individual, lemma_poly_mul_empty_right};
+use verus_fixed_point::fixed_point::limb_ops::{LimbOps, LIMB_BASE};
 
 verus! {
+
+//  ══════════════════════════════════════════════════════════════
+//  LimbOps implementation for RuntimeArithExpr
+//  ══════════════════════════════════════════════════════════════
+//
+//  Wrapper type to satisfy Rust orphan rules: can't impl LimbOps
+//  (from verus-fixed-point) directly for RuntimeArithExpr (from verus-cutedsl).
+//  ArithLimb wraps RuntimeArithExpr and implements LimbOps by building
+//  expression tree nodes for Add, Sub, Mul, Div, Mod.
+
+pub struct ArithLimb {
+    pub expr: RuntimeArithExpr,
+    pub env: Ghost<Seq<int>>,
+}
+
+impl ArithLimb {
+    pub fn from_expr(e: RuntimeArithExpr, env: Ghost<Seq<int>>) -> Self {
+        ArithLimb { expr: e, env }
+    }
+}
+
+impl LimbOps for ArithLimb {
+    open spec fn sem(&self) -> int {
+        arith_eval(&self.expr.view_spec(), self.env@)
+    }
+
+    fn add3(&self, b: &Self, carry: &Self) -> (out: (Self, Self))
+    {
+        proof { reveal_with_fuel(RuntimeArithExpr::view_spec, 2); }
+        let base = RuntimeArithExpr::Const(4_294_967_296i64);
+        let sum = RuntimeArithExpr::Add(
+            Box::new(RuntimeArithExpr::Add(
+                Box::new(self.expr.clone()), Box::new(b.expr.clone()))),
+            Box::new(carry.expr.clone()));
+        let digit = ArithLimb { expr: RuntimeArithExpr::Mod(
+            Box::new(sum.clone()), Box::new(base.clone())), env: self.env };
+        let c_out = ArithLimb { expr: RuntimeArithExpr::Div(
+            Box::new(sum), Box::new(base)), env: self.env };
+        (digit, c_out)
+    }
+
+    fn sub_borrow(&self, b: &Self, borrow: &Self) -> (out: (Self, Self))
+    {
+        proof { reveal_with_fuel(RuntimeArithExpr::view_spec, 2); }
+        let base = RuntimeArithExpr::Const(4_294_967_296i64);
+        let diff_plus_base = RuntimeArithExpr::Add(
+            Box::new(RuntimeArithExpr::Sub(
+                Box::new(RuntimeArithExpr::Sub(
+                    Box::new(self.expr.clone()), Box::new(b.expr.clone()))),
+                Box::new(borrow.expr.clone()))),
+            Box::new(base.clone()));
+        let digit = ArithLimb { expr: RuntimeArithExpr::Mod(
+            Box::new(diff_plus_base), Box::new(base.clone())), env: self.env };
+        let diff = RuntimeArithExpr::Sub(
+            Box::new(RuntimeArithExpr::Sub(
+                Box::new(self.expr.clone()), Box::new(b.expr.clone()))),
+            Box::new(borrow.expr.clone()));
+        let borrow_out = ArithLimb { expr: RuntimeArithExpr::Cmp(
+            RuntimeCmpOp::Lt, Box::new(diff), Box::new(RuntimeArithExpr::Const(0))),
+            env: self.env };
+        (digit, borrow_out)
+    }
+
+    fn mul2(&self, b: &Self) -> (out: (Self, Self))
+    {
+        proof { reveal_with_fuel(RuntimeArithExpr::view_spec, 2); }
+        let base = RuntimeArithExpr::Const(4_294_967_296i64);
+        let prod = RuntimeArithExpr::Mul(
+            Box::new(self.expr.clone()), Box::new(b.expr.clone()));
+        let lo = ArithLimb { expr: RuntimeArithExpr::Mod(
+            Box::new(prod.clone()), Box::new(base.clone())), env: self.env };
+        let hi = ArithLimb { expr: RuntimeArithExpr::Div(
+            Box::new(prod), Box::new(base)), env: self.env };
+        (lo, hi)
+    }
+
+    fn mul_add_carry(&self, b: &Self, accum: &Self, carry: &Self) -> (out: (Self, Self))
+    {
+        proof { reveal_with_fuel(RuntimeArithExpr::view_spec, 2); }
+        let base = RuntimeArithExpr::Const(4_294_967_296i64);
+        let x = RuntimeArithExpr::Add(
+            Box::new(RuntimeArithExpr::Add(
+                Box::new(RuntimeArithExpr::Mul(
+                    Box::new(self.expr.clone()), Box::new(b.expr.clone()))),
+                Box::new(accum.expr.clone()))),
+            Box::new(carry.expr.clone()));
+        let digit = ArithLimb { expr: RuntimeArithExpr::Mod(
+            Box::new(x.clone()), Box::new(base.clone())), env: self.env };
+        let c_out = ArithLimb { expr: RuntimeArithExpr::Div(
+            Box::new(x), Box::new(base)), env: self.env };
+        (digit, c_out)
+    }
+
+    fn zero_val() -> (out: Self) {
+        proof { reveal_with_fuel(RuntimeArithExpr::view_spec, 2); }
+        ArithLimb { expr: RuntimeArithExpr::Const(0), env: Ghost(Seq::empty()) }
+    }
+
+    fn const_u32(c: u32) -> (out: Self) {
+        proof { reveal_with_fuel(RuntimeArithExpr::view_spec, 2); }
+        ArithLimb { expr: RuntimeArithExpr::Const(c as i64), env: Ghost(Seq::empty()) }
+    }
+
+    fn clone_limb(&self) -> (out: Self) {
+        ArithLimb { expr: self.expr.clone(), env: self.env }
+    }
+}
 
 //  ══════════════════════════════════════════════════════════════
 //  RuntimeGpuFixedPoint
