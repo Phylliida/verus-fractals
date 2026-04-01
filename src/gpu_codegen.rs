@@ -13,7 +13,7 @@ use verus_algebra::traits::additive_commutative_monoid::AdditiveCommutativeMonoi
 use verus_algebra::traits::additive_group::AdditiveGroup;
 use verus_algebra::traits::ring::Ring;
 use crate::gpu_ring_test::{GpuFixedPoint, poly_add, poly_neg, poly_insert, poly_mul, mono_mul_poly, arith_to_poly, vars_lt, vars_merge, expr_coeff_bound, lemma_expr_coeff_bound_nonneg, lemma_arith_to_poly_coeff_bound, poly_sum_abs, lemma_arith_to_poly_sum_abs, lemma_poly_sum_abs_nonneg, lemma_poly_sum_abs_bounds_individual, lemma_poly_mul_empty_right};
-use verus_fixed_point::fixed_point::limb_ops::{LimbOps, LIMB_BASE};
+use verus_fixed_point::fixed_point::limb_ops::{LimbOps, LIMB_BASE, valid_limbs};
 
 verus! {
 
@@ -1093,6 +1093,78 @@ pub fn runtime_perturbation_step<const N: usize, const F: usize>(
 }
 
 //  ══════════════════════════════════════════════════════════════
+//  Multi-limb expression generators (public API)
+//  ══════════════════════════════════════════════════════════════
+
+///  Create N ArithLimb variables starting at var_base.
+pub fn make_arith_limbs(var_base: u32, n: usize) -> (out: Vec<ArithLimb>)
+    requires var_base as usize + n <= u32::MAX as usize,
+    ensures out@.len() == n,
+        valid_limbs(out@),
+{
+    let mut v: Vec<ArithLimb> = Vec::new();
+    let mut k: usize = 0;
+    while k < n
+        invariant k <= n, v@.len() == k as int,
+            valid_limbs(v@),
+            var_base as usize + n <= u32::MAX as usize,
+        decreases n - k,
+    {
+        v.push(ArithLimb {
+            expr: RuntimeArithExpr::Var(var_base + k as u32),
+            model: Ghost(0int),
+        });
+        k = k + 1;
+    }
+    v
+}
+
+///  Extract RuntimeArithExpr vec from ArithLimb vec.
+pub fn extract_exprs(limbs: &Vec<ArithLimb>) -> (out: Vec<RuntimeArithExpr>)
+    ensures out@.len() == limbs@.len(),
+{
+    let mut v: Vec<RuntimeArithExpr> = Vec::new();
+    let mut k: usize = 0;
+    while k < limbs.len()
+        invariant k <= limbs@.len(), v@.len() == k as int,
+        decreases limbs@.len() - k,
+    {
+        v.push(limbs[k].expr.clone());
+        k = k + 1;
+    }
+    v
+}
+
+///  Generate N-limb addition expressions.
+///  Returns (result_exprs, carry_expr).
+pub fn gen_add_exprs(a_base: u32, b_base: u32, n: usize) -> (Vec<RuntimeArithExpr>, RuntimeArithExpr)
+    requires
+        a_base as usize + n <= u32::MAX as usize,
+        b_base as usize + n <= u32::MAX as usize,
+{
+    use verus_fixed_point::fixed_point::limb_ops::generic_add_limbs;
+    let a = make_arith_limbs(a_base, n);
+    let b = make_arith_limbs(b_base, n);
+    let (result, carry) = generic_add_limbs(&a, &b, n);
+    (extract_exprs(&result), carry.expr.clone())
+}
+
+///  Generate N-limb Karatsuba multiply expressions.
+///  Returns (result_exprs[2N], ghost_carry).
+pub fn gen_mul_exprs(a_base: u32, b_base: u32, n: usize) -> (Vec<RuntimeArithExpr>, Ghost<int>)
+    requires
+        n > 0, n <= 0x1FFF_FFFF,
+        a_base as usize + n <= u32::MAX as usize,
+        b_base as usize + n <= u32::MAX as usize,
+{
+    use verus_fixed_point::fixed_point::limb_ops::generic_mul_karatsuba;
+    let a = make_arith_limbs(a_base, n);
+    let b = make_arith_limbs(b_base, n);
+    let (result, gc) = generic_mul_karatsuba(&a, &b, n);
+    (extract_exprs(&result), gc)
+}
+
+//  ══════════════════════════════════════════════════════════════
 //  Exec test: build perturbation step expression trees
 //  ══════════════════════════════════════════════════════════════
 
@@ -1126,10 +1198,9 @@ fn test_poly_eq_commutativity() {
     let rhs = b.add(&a);
 
     proof {
-        //  Show expr_all_safe holds for Add(Var(0), Var(1)) and Add(Var(1), Var(0)).
-        reveal_with_fuel(RuntimeArithExpr::view_spec, 2);
-        reveal_with_fuel(expr_all_safe, 2);
-        reveal_with_fuel(expr_coeff_bound, 2);
+        reveal_with_fuel(RuntimeArithExpr::view_spec, 3);
+        reveal_with_fuel(expr_all_safe, 3);
+        reveal_with_fuel(expr_coeff_bound, 3);
     }
 
     let eq = lhs.eq(&rhs);
