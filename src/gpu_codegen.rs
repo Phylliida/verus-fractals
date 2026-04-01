@@ -31,62 +31,115 @@ pub struct ArithLimb {
 impl LimbOps for ArithLimb {
     open spec fn sem(&self) -> int { self.model@ }
 
+    //  GPU-friendly: u32 wrapping add + carry via overflow detection
+    //  sum = a + b (wraps), carry = (sum < a) ? 1 : 0
     fn add3(&self, b: &Self, carry: &Self) -> (out: (Self, Self)) {
-        let base = RuntimeArithExpr::Const(4_294_967_296i64);
-        let sum = RuntimeArithExpr::Add(
-            Box::new(RuntimeArithExpr::Add(
-                Box::new(self.expr.clone()), Box::new(b.expr.clone()))),
-            Box::new(carry.expr.clone()));
+        //  ab = a + b (wrapping u32 add)
+        let ab = RuntimeArithExpr::Add(
+            Box::new(self.expr.clone()), Box::new(b.expr.clone()));
+        //  c1 = (ab < a) ? 1 : 0  (overflow from a+b)
+        let c1 = RuntimeArithExpr::Cmp(
+            RuntimeCmpOp::Lt, Box::new(ab.clone()), Box::new(self.expr.clone()));
+        //  abc = ab + carry_in (wrapping)
+        let abc = RuntimeArithExpr::Add(
+            Box::new(ab.clone()), Box::new(carry.expr.clone()));
+        //  c2 = (abc < ab) ? 1 : 0  (overflow from adding carry)
+        let c2 = RuntimeArithExpr::Cmp(
+            RuntimeCmpOp::Lt, Box::new(abc.clone()), Box::new(ab));
+        //  carry_out = c1 + c2 (always 0 or 1)
+        let carry_out = RuntimeArithExpr::Add(Box::new(c1), Box::new(c2));
         let ghost s = self.model@ + b.model@ + carry.model@;
-        (ArithLimb { expr: RuntimeArithExpr::Mod(Box::new(sum.clone()), Box::new(base.clone())),
-                     model: Ghost(s % LIMB_BASE()) },
-         ArithLimb { expr: RuntimeArithExpr::Div(Box::new(sum), Box::new(base)),
-                     model: Ghost(s / LIMB_BASE()) })
+        (ArithLimb { expr: abc, model: Ghost(s % LIMB_BASE()) },
+         ArithLimb { expr: carry_out, model: Ghost(s / LIMB_BASE()) })
     }
 
+    //  GPU-friendly: u32 wrapping sub + borrow via underflow detection
     fn sub_borrow(&self, b: &Self, borrow: &Self) -> (out: (Self, Self)) {
-        let base = RuntimeArithExpr::Const(4_294_967_296i64);
-        let diff_plus_base = RuntimeArithExpr::Add(
-            Box::new(RuntimeArithExpr::Sub(
-                Box::new(RuntimeArithExpr::Sub(
-                    Box::new(self.expr.clone()), Box::new(b.expr.clone()))),
-                Box::new(borrow.expr.clone()))),
-            Box::new(base.clone()));
-        let diff = RuntimeArithExpr::Sub(
-            Box::new(RuntimeArithExpr::Sub(
-                Box::new(self.expr.clone()), Box::new(b.expr.clone()))),
-            Box::new(borrow.expr.clone()));
+        //  ab = a - b (wrapping)
+        let ab = RuntimeArithExpr::Sub(
+            Box::new(self.expr.clone()), Box::new(b.expr.clone()));
+        //  bw1 = (a < b) ? 1 : 0
+        let bw1 = RuntimeArithExpr::Cmp(
+            RuntimeCmpOp::Lt, Box::new(self.expr.clone()), Box::new(b.expr.clone()));
+        //  result = ab - borrow_in (wrapping)
+        let result = RuntimeArithExpr::Sub(
+            Box::new(ab.clone()), Box::new(borrow.expr.clone()));
+        //  bw2 = (ab < borrow_in) ? 1 : 0
+        let bw2 = RuntimeArithExpr::Cmp(
+            RuntimeCmpOp::Lt, Box::new(ab), Box::new(borrow.expr.clone()));
+        let borrow_out = RuntimeArithExpr::Add(Box::new(bw1), Box::new(bw2));
         let ghost d = self.model@ - b.model@ - borrow.model@;
-        (ArithLimb { expr: RuntimeArithExpr::Mod(Box::new(diff_plus_base), Box::new(base)),
-                     model: Ghost((d + LIMB_BASE()) % LIMB_BASE()) },
-         ArithLimb { expr: RuntimeArithExpr::Cmp(
-                        RuntimeCmpOp::Lt, Box::new(diff), Box::new(RuntimeArithExpr::Const(0))),
-                     model: Ghost(if d < 0 { 1int } else { 0int }) })
+        (ArithLimb { expr: result, model: Ghost((d + LIMB_BASE()) % LIMB_BASE()) },
+         ArithLimb { expr: borrow_out, model: Ghost(if d < 0 { 1int } else { 0int }) })
     }
 
+    //  GPU-friendly: mul_lo is just a * b (wrapping u32).
+    //  mul_hi uses 16-bit splitting: split a,b into hi/lo halves,
+    //  compute partial products, combine.
     fn mul2(&self, b: &Self) -> (out: (Self, Self)) {
-        let base = RuntimeArithExpr::Const(4_294_967_296i64);
-        let prod = RuntimeArithExpr::Mul(Box::new(self.expr.clone()), Box::new(b.expr.clone()));
+        let a = &self.expr;
+        let bv = &b.expr;
+        //  lo = a * b (wrapping u32 — gives low 32 bits)
+        let lo = RuntimeArithExpr::Mul(Box::new(a.clone()), Box::new(bv.clone()));
+        //  hi via 16-bit decomposition:
+        //  a_lo = a & 0xFFFF, a_hi = a >> 16
+        let mask = RuntimeArithExpr::Const(0xFFFF);
+        let a_lo = RuntimeArithExpr::Mul(  // AND via: a_lo = a % 65536... actually use Mod
+            Box::new(a.clone()), Box::new(RuntimeArithExpr::Const(1))); // placeholder
+        //  Actually, WGSL doesn't have bitwise AND in our ArithExpr.
+        //  Use Mod for masking: a & 0xFFFF = a % 65536
+        let sixteen = RuntimeArithExpr::Const(16);
+        let m16 = RuntimeArithExpr::Const(65536);
+        let a_lo2 = RuntimeArithExpr::Mod(Box::new(a.clone()), Box::new(m16.clone()));
+        let a_hi2 = RuntimeArithExpr::Shr(Box::new(a.clone()), Box::new(sixteen.clone()));
+        let b_lo2 = RuntimeArithExpr::Mod(Box::new(bv.clone()), Box::new(m16.clone()));
+        let b_hi2 = RuntimeArithExpr::Shr(Box::new(bv.clone()), Box::new(sixteen.clone()));
+        //  p0 = a_lo * b_lo, p1 = a_lo * b_hi, p2 = a_hi * b_lo, p3 = a_hi * b_hi
+        let p1 = RuntimeArithExpr::Mul(Box::new(a_lo2.clone()), Box::new(b_hi2.clone()));
+        let p2 = RuntimeArithExpr::Mul(Box::new(a_hi2.clone()), Box::new(b_lo2.clone()));
+        let p3 = RuntimeArithExpr::Mul(Box::new(a_hi2), Box::new(b_hi2));
+        //  mid = (lo >> 16) + (p1 & 0xFFFF) + (p2 & 0xFFFF)
+        let lo_hi = RuntimeArithExpr::Shr(Box::new(lo.clone()), Box::new(sixteen.clone()));
+        let p1_lo = RuntimeArithExpr::Mod(Box::new(p1.clone()), Box::new(m16.clone()));
+        let p2_lo = RuntimeArithExpr::Mod(Box::new(p2.clone()), Box::new(m16.clone()));
+        let mid = RuntimeArithExpr::Add(
+            Box::new(RuntimeArithExpr::Add(Box::new(lo_hi), Box::new(p1_lo))),
+            Box::new(p2_lo));
+        //  hi = p3 + (p1 >> 16) + (p2 >> 16) + (mid >> 16)
+        let p1_hi = RuntimeArithExpr::Shr(Box::new(p1), Box::new(sixteen.clone()));
+        let p2_hi = RuntimeArithExpr::Shr(Box::new(p2), Box::new(sixteen.clone()));
+        let mid_hi = RuntimeArithExpr::Shr(Box::new(mid), Box::new(sixteen));
+        let hi = RuntimeArithExpr::Add(
+            Box::new(RuntimeArithExpr::Add(
+                Box::new(RuntimeArithExpr::Add(Box::new(p3), Box::new(p1_hi))),
+                Box::new(p2_hi))),
+            Box::new(mid_hi));
         let ghost p = self.model@ * b.model@;
-        (ArithLimb { expr: RuntimeArithExpr::Mod(Box::new(prod.clone()), Box::new(base.clone())),
-                     model: Ghost(p % LIMB_BASE()) },
-         ArithLimb { expr: RuntimeArithExpr::Div(Box::new(prod), Box::new(base)),
-                     model: Ghost(p / LIMB_BASE()) })
+        (ArithLimb { expr: lo, model: Ghost(p % LIMB_BASE()) },
+         ArithLimb { expr: hi, model: Ghost(p / LIMB_BASE()) })
     }
 
+    //  GPU-friendly: a*b + accum + carry using mul2 + add with carry detection
     fn mul_add_carry(&self, b: &Self, accum: &Self, carry: &Self) -> (out: (Self, Self)) {
-        let base = RuntimeArithExpr::Const(4_294_967_296i64);
-        let x = RuntimeArithExpr::Add(
+        //  (lo, hi) = mul2(a, b)
+        let (mul_lo, mul_hi) = self.mul2(b);
+        //  lo + accum + carry → (digit, c1)
+        let sum1 = RuntimeArithExpr::Add(
+            Box::new(mul_lo.expr.clone()), Box::new(accum.expr.clone()));
+        let c1 = RuntimeArithExpr::Cmp(
+            RuntimeCmpOp::Lt, Box::new(sum1.clone()), Box::new(mul_lo.expr));
+        let sum2 = RuntimeArithExpr::Add(
+            Box::new(sum1.clone()), Box::new(carry.expr.clone()));
+        let c2 = RuntimeArithExpr::Cmp(
+            RuntimeCmpOp::Lt, Box::new(sum2.clone()), Box::new(sum1));
+        //  carry_out = hi + c1 + c2
+        let carry_out = RuntimeArithExpr::Add(
             Box::new(RuntimeArithExpr::Add(
-                Box::new(RuntimeArithExpr::Mul(
-                    Box::new(self.expr.clone()), Box::new(b.expr.clone()))),
-                Box::new(accum.expr.clone()))),
-            Box::new(carry.expr.clone()));
+                Box::new(mul_hi.expr), Box::new(c1))),
+            Box::new(c2));
         let ghost v = self.model@ * b.model@ + accum.model@ + carry.model@;
-        (ArithLimb { expr: RuntimeArithExpr::Mod(Box::new(x.clone()), Box::new(base.clone())),
-                     model: Ghost(v % LIMB_BASE()) },
-         ArithLimb { expr: RuntimeArithExpr::Div(Box::new(x), Box::new(base)),
-                     model: Ghost(v / LIMB_BASE()) })
+        (ArithLimb { expr: sum2, model: Ghost(v % LIMB_BASE()) },
+         ArithLimb { expr: carry_out, model: Ghost(v / LIMB_BASE()) })
     }
 
     fn zero_val() -> (out: Self) {
