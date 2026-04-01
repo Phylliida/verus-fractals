@@ -1164,10 +1164,66 @@ pub fn gen_mul_exprs(a_base: u32, b_base: u32, n: usize) -> (Vec<RuntimeArithExp
     (extract_exprs(&result), gc)
 }
 
-// TODO: Implement a MultiLimbGpuFixedPoint struct that wraps Vec<ArithLimb>
-// and implements Ring operations using generic_add_limbs/generic_mul_karatsuba.
-// Then perturbation_step::<MultiLimbGpuFixedPoint>() automatically generates
-// the multi-limb expression tree — no manual complex arithmetic needed.
+///  Generate one Mandelbrot iteration step as multi-limb ArithLimb expressions.
+///  z' = z² + c  (complex):
+///    z_re' = z_re² - z_im² + c_re
+///    z_im' = 2*z_re*z_im + c_im
+///
+///  Returns (new_zr_exprs, new_zi_exprs) as RuntimeArithExpr vecs (N limbs each).
+///
+///  Variable layout (N limbs each, starting at var_base):
+///    Var(0*N .. 1*N-1):  z_re
+///    Var(1*N .. 2*N-1):  z_im
+///    Var(2*N .. 3*N-1):  c_re
+///    Var(3*N .. 4*N-1):  c_im
+///  Create a GenericFixedPoint<ArithLimb> from variable indices.
+fn make_arith_fp(var_base: u32, n: usize, frac: usize)
+    -> (out: verus_fixed_point::runtime_fixed_point::GenericFixedPoint<ArithLimb>)
+    requires
+        var_base as usize + n <= u32::MAX as usize,
+        n > 0, frac <= n * 32,
+    ensures out.wf_spec(), out.n_exec == n, out.frac_exec == frac,
+{
+    verus_fixed_point::runtime_fixed_point::GenericFixedPoint {
+        limbs: make_arith_limbs(var_base, n),
+        sign: false,
+        n_exec: n,
+        frac_exec: frac,
+    }
+}
+
+pub fn gen_mandelbrot_step(n: usize, frac: usize)
+    -> (Vec<RuntimeArithExpr>, Vec<RuntimeArithExpr>)
+    requires
+        n > 0, n <= 64,
+        frac <= n * 32,
+        frac % 32 == 0,
+        n <= 0x1FFF_FFFF,
+{
+    let n32 = n as u32;
+
+    let zr = make_arith_fp(0 * n32, n, frac);
+    let zi = make_arith_fp(1 * n32, n, frac);
+    let cr = make_arith_fp(2 * n32, n, frac);
+    let ci = make_arith_fp(3 * n32, n, frac);
+
+    //  z_re² and z_im² (fixed-point multiply + truncate)
+    let zr_sq = zr.mul(&zr);
+    let zi_sq = zi.mul(&zi);
+
+    //  2 * z_re * z_im = z_re*z_im + z_re*z_im
+    let zr_zi = zr.mul(&zi);
+    let two_zr_zi = zr_zi.add(&zr_zi);
+
+    //  z_re' = z_re² - z_im² + c_re
+    let new_zr = zr_sq.sub(&zi_sq).add(&cr);
+
+    //  z_im' = 2*z_re*z_im + c_im
+    let new_zi = two_zr_zi.add(&ci);
+
+    //  Extract RuntimeArithExpr from the result limbs
+    (extract_exprs(&new_zr.limbs), extract_exprs(&new_zi.limbs))
+}
 
 //  ══════════════════════════════════════════════════════════════
 //  Exec test: build perturbation step expression trees
