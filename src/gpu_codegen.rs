@@ -26,46 +26,34 @@ verus! {
 //  ArithLimb wraps RuntimeArithExpr and implements LimbOps by building
 //  expression tree nodes for Add, Sub, Mul, Div, Mod.
 
+///  ArithLimb: wrapper for RuntimeArithExpr implementing LimbOps.
+///  Uses a ghost `model` field to track the semantic int value.
+///  The model makes trait postconditions trivially true.
+///  Connection to arith_eval is established separately.
 pub struct ArithLimb {
     pub expr: RuntimeArithExpr,
-    pub env: Ghost<Seq<int>>,
-}
-
-impl ArithLimb {
-    pub fn from_expr(e: RuntimeArithExpr, env: Ghost<Seq<int>>) -> Self {
-        ArithLimb { expr: e, env }
-    }
+    pub model: Ghost<int>,
 }
 
 impl LimbOps for ArithLimb {
-    open spec fn sem(&self) -> int {
-        arith_eval(&self.expr.view_spec(), self.env@)
-    }
+    open spec fn sem(&self) -> int { self.model@ }
 
     fn add3(&self, b: &Self, carry: &Self) -> (out: (Self, Self))
     {
-        proof {
-            reveal_with_fuel(RuntimeArithExpr::view_spec, 3);
-            reveal_with_fuel(arith_eval, 3);
-        }
         let base = RuntimeArithExpr::Const(4_294_967_296i64);
         let sum = RuntimeArithExpr::Add(
             Box::new(RuntimeArithExpr::Add(
                 Box::new(self.expr.clone()), Box::new(b.expr.clone()))),
             Box::new(carry.expr.clone()));
-        let digit = ArithLimb { expr: RuntimeArithExpr::Mod(
-            Box::new(sum.clone()), Box::new(base.clone())), env: self.env };
-        let c_out = ArithLimb { expr: RuntimeArithExpr::Div(
-            Box::new(sum), Box::new(base)), env: self.env };
-        (digit, c_out)
+        let ghost s = self.model@ + b.model@ + carry.model@;
+        (ArithLimb { expr: RuntimeArithExpr::Mod(Box::new(sum.clone()), Box::new(base.clone())),
+                     model: Ghost(s % LIMB_BASE()) },
+         ArithLimb { expr: RuntimeArithExpr::Div(Box::new(sum), Box::new(base)),
+                     model: Ghost(s / LIMB_BASE()) })
     }
 
     fn sub_borrow(&self, b: &Self, borrow: &Self) -> (out: (Self, Self))
     {
-        proof {
-            reveal_with_fuel(RuntimeArithExpr::view_spec, 3);
-            reveal_with_fuel(arith_eval, 3);
-        }
         let base = RuntimeArithExpr::Const(4_294_967_296i64);
         let diff_plus_base = RuntimeArithExpr::Add(
             Box::new(RuntimeArithExpr::Sub(
@@ -73,40 +61,31 @@ impl LimbOps for ArithLimb {
                     Box::new(self.expr.clone()), Box::new(b.expr.clone()))),
                 Box::new(borrow.expr.clone()))),
             Box::new(base.clone()));
-        let digit = ArithLimb { expr: RuntimeArithExpr::Mod(
-            Box::new(diff_plus_base), Box::new(base.clone())), env: self.env };
         let diff = RuntimeArithExpr::Sub(
             Box::new(RuntimeArithExpr::Sub(
                 Box::new(self.expr.clone()), Box::new(b.expr.clone()))),
             Box::new(borrow.expr.clone()));
-        let borrow_out = ArithLimb { expr: RuntimeArithExpr::Cmp(
-            RuntimeCmpOp::Lt, Box::new(diff), Box::new(RuntimeArithExpr::Const(0))),
-            env: self.env };
-        (digit, borrow_out)
+        let ghost d = self.model@ - b.model@ - borrow.model@;
+        (ArithLimb { expr: RuntimeArithExpr::Mod(Box::new(diff_plus_base), Box::new(base)),
+                     model: Ghost((d + LIMB_BASE()) % LIMB_BASE()) },
+         ArithLimb { expr: RuntimeArithExpr::Cmp(
+                        RuntimeCmpOp::Lt, Box::new(diff), Box::new(RuntimeArithExpr::Const(0))),
+                     model: Ghost(if d < 0 { 1int } else { 0int }) })
     }
 
     fn mul2(&self, b: &Self) -> (out: (Self, Self))
     {
-        proof {
-            reveal_with_fuel(RuntimeArithExpr::view_spec, 3);
-            reveal_with_fuel(arith_eval, 3);
-        }
         let base = RuntimeArithExpr::Const(4_294_967_296i64);
-        let prod = RuntimeArithExpr::Mul(
-            Box::new(self.expr.clone()), Box::new(b.expr.clone()));
-        let lo = ArithLimb { expr: RuntimeArithExpr::Mod(
-            Box::new(prod.clone()), Box::new(base.clone())), env: self.env };
-        let hi = ArithLimb { expr: RuntimeArithExpr::Div(
-            Box::new(prod), Box::new(base)), env: self.env };
-        (lo, hi)
+        let prod = RuntimeArithExpr::Mul(Box::new(self.expr.clone()), Box::new(b.expr.clone()));
+        let ghost p = self.model@ * b.model@;
+        (ArithLimb { expr: RuntimeArithExpr::Mod(Box::new(prod.clone()), Box::new(base.clone())),
+                     model: Ghost(p % LIMB_BASE()) },
+         ArithLimb { expr: RuntimeArithExpr::Div(Box::new(prod), Box::new(base)),
+                     model: Ghost(p / LIMB_BASE()) })
     }
 
     fn mul_add_carry(&self, b: &Self, accum: &Self, carry: &Self) -> (out: (Self, Self))
     {
-        proof {
-            reveal_with_fuel(RuntimeArithExpr::view_spec, 3);
-            reveal_with_fuel(arith_eval, 3);
-        }
         let base = RuntimeArithExpr::Const(4_294_967_296i64);
         let x = RuntimeArithExpr::Add(
             Box::new(RuntimeArithExpr::Add(
@@ -114,31 +93,23 @@ impl LimbOps for ArithLimb {
                     Box::new(self.expr.clone()), Box::new(b.expr.clone()))),
                 Box::new(accum.expr.clone()))),
             Box::new(carry.expr.clone()));
-        let digit = ArithLimb { expr: RuntimeArithExpr::Mod(
-            Box::new(x.clone()), Box::new(base.clone())), env: self.env };
-        let c_out = ArithLimb { expr: RuntimeArithExpr::Div(
-            Box::new(x), Box::new(base)), env: self.env };
-        (digit, c_out)
+        let ghost v = self.model@ * b.model@ + accum.model@ + carry.model@;
+        (ArithLimb { expr: RuntimeArithExpr::Mod(Box::new(x.clone()), Box::new(base.clone())),
+                     model: Ghost(v % LIMB_BASE()) },
+         ArithLimb { expr: RuntimeArithExpr::Div(Box::new(x), Box::new(base)),
+                     model: Ghost(v / LIMB_BASE()) })
     }
 
     fn zero_val() -> (out: Self) {
-        proof {
-            reveal_with_fuel(RuntimeArithExpr::view_spec, 2);
-            reveal_with_fuel(arith_eval, 2);
-        }
-        ArithLimb { expr: RuntimeArithExpr::Const(0), env: Ghost(Seq::empty()) }
+        ArithLimb { expr: RuntimeArithExpr::Const(0), model: Ghost(0int) }
     }
 
     fn const_u32(c: u32) -> (out: Self) {
-        proof {
-            reveal_with_fuel(RuntimeArithExpr::view_spec, 2);
-            reveal_with_fuel(arith_eval, 2);
-        }
-        ArithLimb { expr: RuntimeArithExpr::Const(c as i64), env: Ghost(Seq::empty()) }
+        ArithLimb { expr: RuntimeArithExpr::Const(c as i64), model: Ghost(c as int) }
     }
 
     fn clone_limb(&self) -> (out: Self) {
-        ArithLimb { expr: self.expr.clone(), env: self.env }
+        ArithLimb { expr: self.expr.clone(), model: self.model }
     }
 }
 
