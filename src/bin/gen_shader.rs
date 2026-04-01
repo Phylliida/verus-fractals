@@ -69,11 +69,37 @@ fn main() {
         });
     }
 
+    // 2D dispatch: px = gid.x, py = gid.y
+    // pixel_idx = py * width + px
+    let pixel_idx = WgslExpr::Add(
+        Box::new(WgslExpr::Mul(
+            Box::new(WgslExpr::Var(1)),   // py
+            Box::new(WgslExpr::Var(2)))), // width
+        Box::new(WgslExpr::Var(0)));      // px
+
+    // Rewrite scatter to use 2D pixel index
+    for output in &mut outputs {
+        // Replace Var(0) (tid) with pixel_idx in scatter
+        output.scatter = WgslExpr::Add(
+            Box::new(WgslExpr::Mul(
+                Box::new(pixel_idx.clone()),
+                Box::new(WgslExpr::Const(n as i64)))),
+            Box::new(match &output.scatter {
+                WgslExpr::Add(_, k) => (**k).clone(), // extract limb offset
+                _ => WgslExpr::Const(0),
+            }));
+    }
+
     let kernel = KernelDesc {
         name: "mandelbrot_step".into(),
-        guard: WgslExpr::Cmp(CmpOp::Lt,
-            Box::new(WgslExpr::Var(0)),
-            Box::new(WgslExpr::Var(1))),  // tid < n_pixels
+        // Guard: px < width && py < height
+        guard: WgslExpr::Mul(  // Mul(Cmp, Cmp) emits as &&
+            Box::new(WgslExpr::Cmp(CmpOp::Lt,
+                Box::new(WgslExpr::Var(0)),    // px
+                Box::new(WgslExpr::Var(2)))),   // width
+            Box::new(WgslExpr::Cmp(CmpOp::Lt,
+                Box::new(WgslExpr::Var(1)),    // py
+                Box::new(WgslExpr::Var(3))))),  // height
         outputs,
         buffers: vec![
             BufferDesc { name: "z_re".into(), binding: 0, read_only: false },
@@ -81,9 +107,9 @@ fn main() {
             BufferDesc { name: "c_re".into(), binding: 2, read_only: true },
             BufferDesc { name: "c_im".into(), binding: 3, read_only: true },
         ],
-        var_names: vec!["tid".into(), "n_pixels".into()],
-        workgroup_size: [256, 1, 1],
-        dispatch_dims: 1,
+        var_names: vec!["px".into(), "py".into(), "width".into(), "height".into()],
+        workgroup_size: [16, 16, 1],
+        dispatch_dims: 2,
     };
 
     // Step 3: Emit complete WGSL shader
