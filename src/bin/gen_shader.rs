@@ -11,7 +11,7 @@ fn main() {
     let n = 2usize;      // 2 limbs = 64-bit
     let frac = 32usize;  // 32 fractional bits
 
-    eprintln!("Generating {}-limb ({}-bit) Mandelbrot kernel...", n, n * 32);
+    // Minimal output — shader goes to file, not stdout
 
     // Step 1: Generate verified iteration expressions from Rust code
     let (new_zr, new_zi) = gen_mandelbrot_step(n, frac);
@@ -117,6 +117,5 @@ fn main() {
 
     let path = "verified_mandelbrot.wgsl";
     fs::write(path, &shader).unwrap();
-    eprintln!("Written {} ({} bytes, {} lines)",
-        path, shader.len(), shader.lines().count());
+    println!("Written {} ({} bytes)", path, shader.len());
 }
