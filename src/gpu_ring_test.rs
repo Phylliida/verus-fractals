@@ -3968,4 +3968,17 @@ pub proof fn lemma_arith_to_poly_coeff_bound(e: &ArithExpr, k: int)
     //  |arith_to_poly(e)[k].0| <= poly_sum_abs(arith_to_poly(e)) <= expr_coeff_bound(e)
 }
 
+///  poly_mul(p, []) = [] for any p.
+pub proof fn lemma_poly_mul_empty_right(p: Seq<(int, Seq<nat>)>)
+    ensures poly_mul(p, seq![]) =~= seq![],
+    decreases p.len(),
+{
+    reveal_with_fuel(poly_mul, 2);
+    if p.len() > 0 {
+        reveal_with_fuel(mono_mul_poly, 2);
+        reveal_with_fuel(poly_add, 2);
+        lemma_poly_mul_empty_right(p.subrange(1, p.len() as int));
+    }
+}
+
 } //  verus!

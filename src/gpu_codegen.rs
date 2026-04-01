@@ -12,7 +12,7 @@ use verus_algebra::traits::equivalence::Equivalence;
 use verus_algebra::traits::additive_commutative_monoid::AdditiveCommutativeMonoid;
 use verus_algebra::traits::additive_group::AdditiveGroup;
 use verus_algebra::traits::ring::Ring;
-use crate::gpu_ring_test::{GpuFixedPoint, poly_add, poly_neg, poly_insert, poly_mul, mono_mul_poly, arith_to_poly, vars_lt, vars_merge, expr_coeff_bound, lemma_expr_coeff_bound_nonneg, lemma_arith_to_poly_coeff_bound, poly_sum_abs, lemma_arith_to_poly_sum_abs, lemma_poly_sum_abs_nonneg, lemma_poly_sum_abs_bounds_individual};
+use crate::gpu_ring_test::{GpuFixedPoint, poly_add, poly_neg, poly_insert, poly_mul, mono_mul_poly, arith_to_poly, vars_lt, vars_merge, expr_coeff_bound, lemma_expr_coeff_bound_nonneg, lemma_arith_to_poly_coeff_bound, poly_sum_abs, lemma_arith_to_poly_sum_abs, lemma_poly_sum_abs_nonneg, lemma_poly_sum_abs_bounds_individual, lemma_poly_mul_empty_right};
 
 verus! {
 
@@ -523,11 +523,13 @@ pub fn runtime_mono_mul_poly(
         out
     } else {
         let ghost abs_c: int = if (c as int) >= 0 { c as int } else { -(c as int) };
+        assert(-abs_c <= c as int && c as int <= abs_c);
         assert(i64::MIN <= (c as int) * (q@[0].0 as int) <= i64::MAX) by(nonlinear_arith)
             requires
                 -(qb@) <= q@[0].0 as int <= qb@,
                 abs_c * qb@ <= i64::MAX as int / 2,
-                qb@ >= 0;
+                qb@ >= 0, abs_c >= 0,
+                -abs_c <= c as int <= abs_c;
         let nc: i64 = c * q[0].0;
         let nv = runtime_vars_merge(vars, &q[0].1);
         let qt = poly_tail(q);
@@ -548,12 +550,19 @@ pub fn runtime_mono_mul_poly(
                     poly_sum_abs(qtv) >= 0, abs_c >= 0;
         }
         let rest = runtime_mono_mul_poly(c, vars, &qt, qb, ecb);
+        proof {
+            let qv_ecb = poly_rt_view(q@);
+            lemma_poly_sum_abs_bounds_individual(qv_ecb, 0);
+            lemma_poly_sum_abs_nonneg(qv_ecb);
+        }
+        let ghost sa_q: int = poly_sum_abs(poly_rt_view(q@));
         assert(-(ecb@) <= nc as int <= ecb@) by(nonlinear_arith)
             requires
-                -(qb@) <= q@[0].0 as int <= qb@,
-                abs_c * qb@ <= i64::MAX as int / 2,
                 nc as int == (c as int) * (q@[0].0 as int),
-                qb@ >= 0;
+                -abs_c <= c as int <= abs_c, abs_c >= 0,
+                -sa_q <= q@[0].0 as int <= sa_q,
+                abs_c * sa_q <= ecb@,
+                sa_q >= 0, ecb@ >= 0;
         let result = runtime_poly_insert(nc, &nv, &rest, ecb, ecb);
         //  poly_insert gives bound 2*ecb. We need ecb.
         //  Use spec lemma: mono_mul_poly result has sum_abs <= |c|*sum_abs(q) <= ecb.
@@ -624,6 +633,14 @@ pub fn runtime_poly_mul(
                     poly_sum_abs(qv) >= 0, abs_p0 >= 0;
         }
         //  mono_mul needs |p[0].0|*qb <= i64::MAX/2. From pb*qb <= i64::MAX/2 and |p[0].0| <= pb.
+        proof {
+            assert(-(pb@) <= p@[0].0 as int <= pb@);
+            let ghost abs_p0_exec: int = if (p@[0].0 as int) >= 0 { p@[0].0 as int } else { -(p@[0].0 as int) };
+            assert(abs_p0_exec >= 0int && abs_p0_exec <= pb@);
+            assert(abs_p0_exec * qb@ <= i64::MAX as int / 2) by(nonlinear_arith)
+                requires abs_p0_exec <= pb@, pb@ * qb@ <= i64::MAX as int / 2,
+                         pb@ >= 0, qb@ >= 0, abs_p0_exec >= 0;
+        }
         let mono = runtime_mono_mul_poly(p[0].0, &p[0].1, q, qb, ecb);
         assert(rt_poly_bounded(pt@, pb@)) by {
             assert forall |k: int| 0 <= k < pt@.len()
@@ -769,42 +786,51 @@ pub fn runtime_arith_to_poly(
     proof {
         reveal_with_fuel(RuntimeArithExpr::view_spec, 2);
         reveal_with_fuel(expr_all_safe, 2);
+        reveal_with_fuel(expr_coeff_bound, 2);
     }
     let ghost ecb = expr_coeff_bound(&e.view_spec());
     match e {
         RuntimeArithExpr::Const(c) => {
-            proof { reveal_with_fuel(expr_coeff_bound, 2); }
             if *c == 0 {
-                Vec::new()
+                let out: Vec<(i64, Vec<u32>)> = Vec::new();
+                return out;
             } else {
                 let mut out = Vec::new();
                 out.push((*c, Vec::new()));
-                out
+                //  Help Z3: vars_view of empty == Seq::empty
+                assert(vars_view(out@[0].1@) =~= Seq::<nat>::empty()) by {
+                    assert(out@[0].1@.len() == 0);
+                    assert(Seq::<nat>::empty().len() == 0);
+                }
+                assert(poly_rt_view(out@) =~= arith_to_poly(&e.view_spec()));                return out;
             }
         },
         RuntimeArithExpr::Var(n) => {
-            proof { reveal_with_fuel(expr_coeff_bound, 2); }
             let mut vars = Vec::new();
             vars.push(*n);
             let mut out = Vec::new();
             out.push((1i64, vars));
-            out
+            //  Help Z3: vars_view([n]) =~= seq![n as nat]
+            assert(vars_view(out@[0].1@) =~= seq![*n as nat]) by {
+                assert(out@[0].1@.len() == 1);
+                assert(out@[0].1@[0] == *n);
+            }
+            assert(poly_rt_view(out@) =~= arith_to_poly(&e.view_spec()));            return out;
         },
         RuntimeArithExpr::Add(a, b) => {
-            proof { reveal_with_fuel(expr_coeff_bound, 2); }
             let pa = runtime_arith_to_poly(a);
             let pb = runtime_arith_to_poly(b);
             proof {
                 lemma_rt_bounded_from_spec(pa@, &a.view_spec());
                 lemma_rt_bounded_from_spec(pb@, &b.view_spec());
-                //  pa bounded by ecb(a) <= ecb. pb bounded by ecb(b) <= ecb.
                 lemma_expr_coeff_bound_nonneg(&a.view_spec());
                 lemma_expr_coeff_bound_nonneg(&b.view_spec());
             }
-            runtime_poly_add(&pa, &pb, Ghost(ecb))
+            let result = runtime_poly_add(&pa, &pb, Ghost(ecb));
+            assert(poly_rt_view(result@) =~= arith_to_poly(&e.view_spec()));            proof { lemma_rt_bounded_from_spec(result@, &e.view_spec()); }
+            return result;
         },
         RuntimeArithExpr::Sub(a, b) => {
-            proof { reveal_with_fuel(expr_coeff_bound, 2); }
             let pa = runtime_arith_to_poly(a);
             let pb = runtime_arith_to_poly(b);
             proof {
@@ -814,7 +840,6 @@ pub fn runtime_arith_to_poly(
                 lemma_expr_coeff_bound_nonneg(&b.view_spec());
             }
             let neg_pb = runtime_poly_neg(&pb);
-            //  neg_pb has same |coefficients| as pb, bounded by ecb(b) <= ecb
             assert(rt_poly_bounded(neg_pb@, ecb)) by {
                 assert forall |k: int| 0 <= k < neg_pb@.len()
                     implies (#[trigger] neg_pb@[k]).0 as int >= -(ecb) && neg_pb@[k].0 as int <= ecb
@@ -822,28 +847,22 @@ pub fn runtime_arith_to_poly(
                     assert(neg_pb@[k].0 as int == -(pb@[k].0 as int));
                 }
             }
-            runtime_poly_add(&pa, &neg_pb, Ghost(ecb))
+            let result = runtime_poly_add(&pa, &neg_pb, Ghost(ecb));
+            assert(poly_rt_view(result@) =~= arith_to_poly(&e.view_spec()));            proof { lemma_rt_bounded_from_spec(result@, &e.view_spec()); }
+            return result;
         },
         RuntimeArithExpr::Mul(a, b) => {
-            proof { reveal_with_fuel(expr_coeff_bound, 2); }
             let pa = runtime_arith_to_poly(a);
             let pb = runtime_arith_to_poly(b);
             let ghost ba = expr_coeff_bound(&a.view_spec());
             let ghost bb = expr_coeff_bound(&b.view_spec());
-            let ghost mb = if ba >= bb { ba } else { bb };
             proof {
                 lemma_rt_bounded_from_spec(pa@, &a.view_spec());
                 lemma_rt_bounded_from_spec(pb@, &b.view_spec());
                 lemma_expr_coeff_bound_nonneg(&a.view_spec());
                 lemma_expr_coeff_bound_nonneg(&b.view_spec());
-                //  sum_abs(pa_view) <= ecb(a) and sum_abs(pb_view) <= ecb(b).
-                //  Product <= ecb(a)*ecb(b) = ecb(Mul(a,b)).
                 lemma_arith_to_poly_sum_abs(&a.view_spec());
                 lemma_arith_to_poly_sum_abs(&b.view_spec());
-                //  poly_sum_abs(pa_view) * poly_sum_abs(pb_view)
-                //  <= ecb(a) * ecb(b) = ecb
-                //  Connect runtime view to spec: poly_rt_view(pa@) =~= arith_to_poly(a)
-                //  So poly_sum_abs is the same for both.
                 assert(poly_sum_abs(poly_rt_view(pa@)) <= ba) by {
                     assert(poly_rt_view(pa@) =~= arith_to_poly(&a.view_spec()));
                 }
@@ -861,62 +880,36 @@ pub fn runtime_arith_to_poly(
                         ba >= 0, bb >= 0,
                         poly_sum_abs(poly_rt_view(pa@)) >= 0,
                         poly_sum_abs(poly_rt_view(pb@)) >= 0;
-                //  mb = max(ba, bb). mb^2 <= max(ba^2, bb^2) <= i64::MAX/4
-                //  (from expr_all_safe on sub-expressions)
                 reveal_with_fuel(expr_all_safe, 2);
-                //  Use ecb as the single bound. Both ba <= ecb and bb <= ecb
-                //  since ecb = ba*bb and ba,bb >= 1 (we checked ecb > 0 below).
-                //  ecb^2 = (ba*bb)^2 <= (max(ba,bb))^4 which could be large.
-                //  But ecb*ecb <= i64::MAX/4 from expr_all_safe.
             }
-            //  Use ecb as bound. Both ba,bb <= ecb when both >= 1.
-            //  When ba=0 or bb=0: ecb=0, result is empty.
-            //  When ecb > 0: both ba,bb >= 1, so ba <= ecb and bb <= ecb.
-            //  When ecb = 0: one of ba,bb is 0, the sub-poly is empty, result is empty.
             if pa.len() == 0 || pb.len() == 0 {
-                //  One sub-polynomial is empty → poly_mul gives empty.
                 let out: Vec<(i64, Vec<u32>)> = Vec::new();
                 proof {
                     reveal_with_fuel(poly_mul, 2);
                     assert(rt_poly_bounded(out@, ecb));
-                    //  Need to show the empty result matches spec.
-                    //  arith_to_poly(Mul(a,b)) = poly_mul(pa_view, pb_view).
-                    //  If pa is empty: poly_mul([], pb_view) = []. ✓
-                    //  If pb is empty: poly_mul(pa_view, []) = ? — depends on pa.
-                    //  Actually poly_mul([x, ...], []) recurses with mono_mul_poly which returns [].
-                    //  So poly_mul(anything, []) = []. But proving this requires induction.
-                    //  For now, the correctness postcondition should follow from poly_mul def.
+                    //  arith_to_poly(Mul(a,b)) = poly_mul(arith_to_poly(a), arith_to_poly(b))
+                    //  Use spec-level args for poly_mul_empty_right
+                    let a_poly = arith_to_poly(&a.view_spec());
+                    let b_poly = arith_to_poly(&b.view_spec());
+                    //  From IH: poly_rt_view(pa@) =~= a_poly, poly_rt_view(pb@) =~= b_poly
+                    if pa.len() == 0 {
+                        //  a_poly =~= poly_rt_view(pa@) has len 0 → a_poly =~= seq![]
+                        //  poly_mul(seq![], anything) = seq![] from base case
+                    } else {
+                        //  pb.len() == 0: b_poly =~= poly_rt_view(pb@) has len 0 → b_poly =~= seq![]
+                        assert(b_poly =~= seq![]);
+                        lemma_poly_mul_empty_right(a_poly);
+                    }
                 }
-                out
+                return out;
             } else {
-                proof {
-                    //  ba > 0 and bb > 0 (since pa and pb are non-empty, their ecbs must be > 0
-                    //  because arith_to_poly of an expr with ecb=0 is empty).
-                    //  So ecb = ba*bb > 0. ba <= ecb and bb <= ecb.
-                    //  ecb = ba*bb. If pa and pb non-empty: ba > 0 and bb > 0.
-                    //  Why? IH: pa bounded by ba. If pa non-empty with nonzero coeff:
-                    //  |coeff| <= ba, so ba >= 1 (since coeff is int and |coeff| >= 1).
-                    //  Similarly bb >= 1.
-                    //  Alternatively: just use lemma_arith_to_poly_coeff_bound to directly
-                    //  establish pa bounded by ecb.
-                    lemma_arith_to_poly_sum_abs(&a.view_spec());
-                    lemma_arith_to_poly_sum_abs(&b.view_spec());
-                    //  sum_abs(arith_to_poly(a)) <= ba. Individual coeffs <= ba.
-                    //  Need ba <= ecb. From ecb = ba*bb with bb >= 1:
-                    //  We know pb.len() > 0. The IH gives rt_poly_bounded(pb@, bb).
-                    //  If pb is non-empty and WF: min coeff >= 1 (since WF has nonzero coeffs).
-                    //  So bb >= 1. Then ba <= ba*bb = ecb.
-                    //  For simplicity: just bound pa by ecb using the spec lemma directly.
-                }
-                //  Pass ba and bb as separate bounds.
-                //  poly_mul needs: ba*bb <= i64::MAX/2.
-                //  From expr_all_safe: ecb*ecb <= i64::MAX/4. ecb = ba*bb.
-                //  ba*bb = ecb <= sqrt(i64::MAX/4). So ba*bb <= i64::MAX/4 <= i64::MAX/2. ✓
-                runtime_poly_mul(&pa, &pb, Ghost(ba), Ghost(bb), Ghost(ecb))
+                let result = runtime_poly_mul(&pa, &pb, Ghost(ba), Ghost(bb), Ghost(ecb));
+                assert(poly_rt_view(result@) =~= arith_to_poly(&e.view_spec()));                return result;
             }
         },
         _ => {
-            Vec::new()
+            let out: Vec<(i64, Vec<u32>)> = Vec::new();
+            assert(poly_rt_view(out@) =~= arith_to_poly(&e.view_spec()));            return out;
         },
     }
 }
