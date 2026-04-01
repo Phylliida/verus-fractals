@@ -1030,24 +1030,28 @@ fn test_build_perturbation() {
 //  Exec test: polynomial equality
 //  ══════════════════════════════════════════════════════════════
 
-///  Test that (a + b) == (b + a) via polynomial normalization.
-fn test_poly_eq_commutativity()
-    requires
-        expr_all_safe(&RuntimeGpuFixedPoint::<4, 2>::from_var(0).expr.view_spec()),
-        expr_all_safe(&RuntimeGpuFixedPoint::<4, 2>::from_var(1).expr.view_spec()),
-{
+///  Test that (a + b) == (b + a) via polynomial normalization at exec time.
+fn test_poly_eq_commutativity() {
     let a = RuntimeGpuFixedPoint::<4, 2>::from_var(0);
     let b = RuntimeGpuFixedPoint::<4, 2>::from_var(1);
 
-    //  a + b  vs  b + a — commutativity
+    //  a + b  vs  b + a — different ArithExpr trees, same polynomial.
     let lhs = a.add(&b);
     let rhs = b.add(&a);
-    //  These have different ArithExpr trees but the same polynomial normal form.
-    //  eq() normalizes both to the same sorted polynomial and returns true.
+
     proof {
-        //  The spec says these are eqv (Ring commutativity):
+        //  Show expr_all_safe holds for Add(Var(0), Var(1)) and Add(Var(1), Var(0)).
+        reveal_with_fuel(RuntimeArithExpr::view_spec, 2);
+        reveal_with_fuel(expr_all_safe, 2);
+        reveal_with_fuel(expr_coeff_bound, 2);
+    }
+
+    let eq = lhs.eq(&rhs);
+    //  Verify the result matches spec-level commutativity:
+    proof {
         use verus_algebra::traits::additive_commutative_monoid::AdditiveCommutativeMonoid;
         GpuFixedPoint::<4, 2>::axiom_add_commutative(a@, b@);
+        assert(eq == true);
     }
 }
 
