@@ -1164,6 +1164,11 @@ pub fn gen_mul_exprs(a_base: u32, b_base: u32, n: usize) -> (Vec<RuntimeArithExp
     (extract_exprs(&result), gc)
 }
 
+// TODO: Implement a MultiLimbGpuFixedPoint struct that wraps Vec<ArithLimb>
+// and implements Ring operations using generic_add_limbs/generic_mul_karatsuba.
+// Then perturbation_step::<MultiLimbGpuFixedPoint>() automatically generates
+// the multi-limb expression tree — no manual complex arithmetic needed.
+
 //  ══════════════════════════════════════════════════════════════
 //  Exec test: build perturbation step expression trees
 //  ══════════════════════════════════════════════════════════════
