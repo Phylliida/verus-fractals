@@ -44,7 +44,10 @@ impl LimbOps for ArithLimb {
 
     fn add3(&self, b: &Self, carry: &Self) -> (out: (Self, Self))
     {
-        proof { reveal_with_fuel(RuntimeArithExpr::view_spec, 2); }
+        proof {
+            reveal_with_fuel(RuntimeArithExpr::view_spec, 3);
+            reveal_with_fuel(arith_eval, 3);
+        }
         let base = RuntimeArithExpr::Const(4_294_967_296i64);
         let sum = RuntimeArithExpr::Add(
             Box::new(RuntimeArithExpr::Add(
@@ -59,7 +62,10 @@ impl LimbOps for ArithLimb {
 
     fn sub_borrow(&self, b: &Self, borrow: &Self) -> (out: (Self, Self))
     {
-        proof { reveal_with_fuel(RuntimeArithExpr::view_spec, 2); }
+        proof {
+            reveal_with_fuel(RuntimeArithExpr::view_spec, 3);
+            reveal_with_fuel(arith_eval, 3);
+        }
         let base = RuntimeArithExpr::Const(4_294_967_296i64);
         let diff_plus_base = RuntimeArithExpr::Add(
             Box::new(RuntimeArithExpr::Sub(
@@ -81,7 +87,10 @@ impl LimbOps for ArithLimb {
 
     fn mul2(&self, b: &Self) -> (out: (Self, Self))
     {
-        proof { reveal_with_fuel(RuntimeArithExpr::view_spec, 2); }
+        proof {
+            reveal_with_fuel(RuntimeArithExpr::view_spec, 3);
+            reveal_with_fuel(arith_eval, 3);
+        }
         let base = RuntimeArithExpr::Const(4_294_967_296i64);
         let prod = RuntimeArithExpr::Mul(
             Box::new(self.expr.clone()), Box::new(b.expr.clone()));
@@ -94,7 +103,10 @@ impl LimbOps for ArithLimb {
 
     fn mul_add_carry(&self, b: &Self, accum: &Self, carry: &Self) -> (out: (Self, Self))
     {
-        proof { reveal_with_fuel(RuntimeArithExpr::view_spec, 2); }
+        proof {
+            reveal_with_fuel(RuntimeArithExpr::view_spec, 3);
+            reveal_with_fuel(arith_eval, 3);
+        }
         let base = RuntimeArithExpr::Const(4_294_967_296i64);
         let x = RuntimeArithExpr::Add(
             Box::new(RuntimeArithExpr::Add(
@@ -110,12 +122,18 @@ impl LimbOps for ArithLimb {
     }
 
     fn zero_val() -> (out: Self) {
-        proof { reveal_with_fuel(RuntimeArithExpr::view_spec, 2); }
+        proof {
+            reveal_with_fuel(RuntimeArithExpr::view_spec, 2);
+            reveal_with_fuel(arith_eval, 2);
+        }
         ArithLimb { expr: RuntimeArithExpr::Const(0), env: Ghost(Seq::empty()) }
     }
 
     fn const_u32(c: u32) -> (out: Self) {
-        proof { reveal_with_fuel(RuntimeArithExpr::view_spec, 2); }
+        proof {
+            reveal_with_fuel(RuntimeArithExpr::view_spec, 2);
+            reveal_with_fuel(arith_eval, 2);
+        }
         ArithLimb { expr: RuntimeArithExpr::Const(c as i64), env: Ghost(Seq::empty()) }
     }
 
