@@ -18,18 +18,11 @@ use verus_fixed_point::fixed_point::limb_ops::{LimbOps, LIMB_BASE};
 verus! {
 
 //  ══════════════════════════════════════════════════════════════
-//  LimbOps implementation for RuntimeArithExpr
+//  ArithLimb: LimbOps for RuntimeArithExpr
 //  ══════════════════════════════════════════════════════════════
-//
-//  Wrapper type to satisfy Rust orphan rules: can't impl LimbOps
-//  (from verus-fixed-point) directly for RuntimeArithExpr (from verus-cutedsl).
-//  ArithLimb wraps RuntimeArithExpr and implements LimbOps by building
-//  expression tree nodes for Add, Sub, Mul, Div, Mod.
 
-///  ArithLimb: wrapper for RuntimeArithExpr implementing LimbOps.
-///  Uses a ghost `model` field to track the semantic int value.
-///  The model makes trait postconditions trivially true.
-///  Connection to arith_eval is established separately.
+///  Wrapper for RuntimeArithExpr that implements LimbOps.
+///  Ghost `model` tracks the semantic value — makes postconditions trivial.
 pub struct ArithLimb {
     pub expr: RuntimeArithExpr,
     pub model: Ghost<int>,
@@ -38,8 +31,7 @@ pub struct ArithLimb {
 impl LimbOps for ArithLimb {
     open spec fn sem(&self) -> int { self.model@ }
 
-    fn add3(&self, b: &Self, carry: &Self) -> (out: (Self, Self))
-    {
+    fn add3(&self, b: &Self, carry: &Self) -> (out: (Self, Self)) {
         let base = RuntimeArithExpr::Const(4_294_967_296i64);
         let sum = RuntimeArithExpr::Add(
             Box::new(RuntimeArithExpr::Add(
@@ -52,8 +44,7 @@ impl LimbOps for ArithLimb {
                      model: Ghost(s / LIMB_BASE()) })
     }
 
-    fn sub_borrow(&self, b: &Self, borrow: &Self) -> (out: (Self, Self))
-    {
+    fn sub_borrow(&self, b: &Self, borrow: &Self) -> (out: (Self, Self)) {
         let base = RuntimeArithExpr::Const(4_294_967_296i64);
         let diff_plus_base = RuntimeArithExpr::Add(
             Box::new(RuntimeArithExpr::Sub(
@@ -73,8 +64,7 @@ impl LimbOps for ArithLimb {
                      model: Ghost(if d < 0 { 1int } else { 0int }) })
     }
 
-    fn mul2(&self, b: &Self) -> (out: (Self, Self))
-    {
+    fn mul2(&self, b: &Self) -> (out: (Self, Self)) {
         let base = RuntimeArithExpr::Const(4_294_967_296i64);
         let prod = RuntimeArithExpr::Mul(Box::new(self.expr.clone()), Box::new(b.expr.clone()));
         let ghost p = self.model@ * b.model@;
@@ -84,8 +74,7 @@ impl LimbOps for ArithLimb {
                      model: Ghost(p / LIMB_BASE()) })
     }
 
-    fn mul_add_carry(&self, b: &Self, accum: &Self, carry: &Self) -> (out: (Self, Self))
-    {
+    fn mul_add_carry(&self, b: &Self, accum: &Self, carry: &Self) -> (out: (Self, Self)) {
         let base = RuntimeArithExpr::Const(4_294_967_296i64);
         let x = RuntimeArithExpr::Add(
             Box::new(RuntimeArithExpr::Add(
