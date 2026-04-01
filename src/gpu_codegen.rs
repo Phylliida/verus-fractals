@@ -113,6 +113,22 @@ impl<const N: usize, const F: usize> RuntimeGpuFixedPoint<N, F> {
         RuntimeGpuFixedPoint { expr: self.expr.clone() }
     }
 
+    //  ─── Equality (polynomial normal form) ─────────────────────
+
+    ///  Test equivalence by normalizing both sides to polynomials
+    ///  and comparing structurally. Returns true iff self@ eqv other@.
+    pub fn eq(&self, other: &Self) -> (out: bool)
+        requires
+            expr_all_safe(&self.expr.view_spec()),
+            expr_all_safe(&other.expr.view_spec()),
+        ensures
+            out == self@.eqv(other@),
+    {
+        let pa = runtime_arith_to_poly(&self.expr);
+        let pb = runtime_arith_to_poly(&other.expr);
+        runtime_poly_eq(&pa, &pb)
+    }
+
     //  ─── Access ────────────────────────────────────────────────
 
     ///  Get the underlying RuntimeArithExpr (for shader codegen).
@@ -1008,6 +1024,31 @@ fn test_build_perturbation() {
     //  The result contains RuntimeArithExpr trees that can be compiled to WGSL.
     let _re_expr = new_dr.into_expr();
     let _im_expr = new_di.into_expr();
+}
+
+//  ══════════════════════════════════════════════════════════════
+//  Exec test: polynomial equality
+//  ══════════════════════════════════════════════════════════════
+
+///  Test that (a + b) == (b + a) via polynomial normalization.
+fn test_poly_eq_commutativity()
+    requires
+        expr_all_safe(&RuntimeGpuFixedPoint::<4, 2>::from_var(0).expr.view_spec()),
+        expr_all_safe(&RuntimeGpuFixedPoint::<4, 2>::from_var(1).expr.view_spec()),
+{
+    let a = RuntimeGpuFixedPoint::<4, 2>::from_var(0);
+    let b = RuntimeGpuFixedPoint::<4, 2>::from_var(1);
+
+    //  a + b  vs  b + a — commutativity
+    let lhs = a.add(&b);
+    let rhs = b.add(&a);
+    //  These have different ArithExpr trees but the same polynomial normal form.
+    //  eq() normalizes both to the same sorted polynomial and returns true.
+    proof {
+        //  The spec says these are eqv (Ring commutativity):
+        use verus_algebra::traits::additive_commutative_monoid::AdditiveCommutativeMonoid;
+        GpuFixedPoint::<4, 2>::axiom_add_commutative(a@, b@);
+    }
 }
 
 } //  verus!
