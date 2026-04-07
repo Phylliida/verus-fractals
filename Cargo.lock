@@ -169,6 +169,7 @@ version = "0.1.0"
 dependencies = [
  "verus-algebra",
  "verus-bigint",
+ "verus-fixed-point",
  "verus-interval-arithmetic",
  "verus-rational",
  "verus-vulkan",
