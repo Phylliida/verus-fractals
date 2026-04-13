@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-vstd = { path = "../verus/source/vstd" }
+vstd = { path = "../verus-dev/source/vstd" }
 verus-algebra = { path = "../verus-algebra" }
 verus-bigint = { path = "../verus-bigint" }
 verus-rational = { path = "../verus-rational" }
@@ -13,7 +13,7 @@ verus-fixed-point = { path = "../verus-fixed-point" }
 verus-cutedsl = { path = "../verus-cutedsl" }
 verus-mandelbrot = { path = "../verus-mandelbrot" }
 verus-cutedsl-codegen = { path = "../verus-cutedsl-codegen" }
-builtin = { package = "verus_builtin", path = "../verus/source/builtin" }
+builtin = { package = "verus_builtin", path = "../verus-dev/source/builtin" }
 
 [package.metadata.verus]
 verify = true
